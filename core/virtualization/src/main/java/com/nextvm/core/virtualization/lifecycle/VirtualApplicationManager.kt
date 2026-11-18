@@ -95,6 +95,21 @@ private var v155InitTraceStarted = false
 @Volatile
 private var v155InitTraceStoppedByClick = false
 
+// v156: login-page load trace (LoginActivity first resume,
+// once per process). The init trace only covers the
+// Application burst — 9626's init table has 1,693 methods
+// and no LoginActivity at all — so the load window was
+// never method-traced. 256MB buffer (the deferred fallback
+// from v151/v154), 20s window, same filter pass.
+@Volatile
+private var v156LoadTraceStarted = false
+
+@Volatile
+private var v156LoadTraceStoppedByClick = false
+
+@Volatile
+private var v156LoadTraceFiltered = false
+
 /**
  * v155: stop-before-start for the click traces (kept from v153,
  * which never fired in the frozen sessions — exonerated). If a
@@ -113,12 +128,33 @@ private fun v155StopBeforeStart(dir: java.io.File, tag: String) {
         android.os.Debug.stopMethodTracing()
         GuestBreadcrumb.log("$tag stop-before-start")
         v155InitTraceStoppedByClick = true
+        // v156: if the load trace was the active one, the
+        // click stopped it too — its delayed stop must skip
+        // itself and its filter must run here, or the load
+        // trace file is never filtered.
+        if (v156LoadTraceStarted) {
+            v156LoadTraceStoppedByClick = true
+        }
         val initFile = java.io.File(
             dir, "v155-trace-" + android.os.Process.myPid() + "-1.trace"
         )
         Thread({
             filterV154Trace(initFile, dir)
         }, "v155-trace-filter").start()
+        if (v156LoadTraceStarted && !v156LoadTraceFiltered) {
+            v156LoadTraceFiltered = true
+            val loadFile = java.io.File(
+                dir,
+                "v156-load-trace-" + android.os.Process.myPid() +
+                    "-1.trace"
+            )
+            Thread({
+                filterV154Trace(
+                    loadFile, dir,
+                    "v156-load-filtered.log", "v156-load"
+                )
+            }, "v156-load-filter").start()
+        }
     } catch (e: Throwable) {
         GuestBreadcrumb.log(
             "$tag stop-before-start none " +
@@ -166,6 +202,64 @@ private fun startV154InitTrace() {
     } catch (e: Throwable) {
         GuestBreadcrumb.log(
             "v155-trace start failed " +
+                "${e.javaClass.simpleName}: " + e.message
+        )
+    }
+}
+
+private fun startV156LoadTrace() {
+    if (v156LoadTraceStarted) return
+    try {
+        val dir = GuestBreadcrumb.filesDir() ?: return
+        // Stop the init trace first (its 20s timer has not
+        // fired yet at first LoginActivity resume); a second
+        // start while tracing is a silent no-op (v152). The
+        // started flag is set AFTER this call so the
+        // stop-before-start does not mark the load trace
+        // itself as stopped-by-click before it starts.
+        v155StopBeforeStart(dir, "v156-load")
+        v156LoadTraceStarted = true
+        val traceFile = java.io.File(
+            dir,
+            "v156-load-trace-" + android.os.Process.myPid() + "-1.trace"
+        )
+        android.os.Debug.startMethodTracing(
+            traceFile.absolutePath, 256 * 1024 * 1024
+        )
+        GuestBreadcrumb.log("v156-load-trace start file=" + traceFile.name)
+        android.os.Handler(
+            android.os.Looper.getMainLooper()
+        ).postDelayed({
+            if (v156LoadTraceStoppedByClick) {
+                GuestBreadcrumb.log(
+                    "v156-load-trace stop skipped already stopped by click"
+                )
+            } else {
+                try {
+                    android.os.Debug.stopMethodTracing()
+                    GuestBreadcrumb.log(
+                        "v156-load-trace stop delayed file=" + traceFile.name
+                    )
+                } catch (e: Throwable) {
+                    GuestBreadcrumb.log(
+                        "v156-load-trace stop failed " +
+                            "${e.javaClass.simpleName}: " + e.message
+                    )
+                }
+                if (!v156LoadTraceFiltered) {
+                    v156LoadTraceFiltered = true
+                    Thread({
+                        filterV154Trace(
+                            traceFile, dir,
+                            "v156-load-filtered.log", "v156-load"
+                        )
+                    }, "v156-load-filter").start()
+                }
+            }
+        }, 20000L)
+    } catch (e: Throwable) {
+        GuestBreadcrumb.log(
+            "v156-load-trace start failed " +
                 "${e.javaClass.simpleName}: " + e.message
         )
     }
@@ -663,6 +757,17 @@ class VirtualApplicationManager @Inject constructor(
 
                     override fun onActivityResumed(a: android.app.Activity) {
                         GuestBreadcrumb.log("cb onActivityResumed " + a.javaClass.name)
+                        // v156: trace the login page's load window.
+                        // First resume of LoginActivity, once per
+                        // process. The init trace never covers this
+                        // window (9626's init table has no
+                        // LoginActivity at all — buffer filled in
+                        // the Application burst).
+                        if (a.javaClass.name ==
+                            "com.cmccit.loginmodule.ac.LoginActivity"
+                        ) {
+                            startV156LoadTrace()
+                        }
                         // v124: every resume re-checks the login button
                         // (fragment tab switches do not resume a new
                         // Activity, so the timer below covers those).
