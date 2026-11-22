@@ -47,17 +47,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // ============ 软件渲染（sandboxsensor 方案 A）============
-        // 本机 Adreno 830 的着色器编译器（libllvm-glnext）在编译新的 shader 变体时
-        // 会 SIGABRT（RenderThread）。已实测触发点：Card 阴影、NavHost 过渡、圆环 drawArc。
-        // 逐个消除无法根治（每加一个 UI 效果就是一次新变体），故对容器 UI 强制软件层：
-        // 绘制走 CPU Canvas，完全不创建 GL program。
-        // 仅作用于宿主 UI 的 DecorView；guest 在自己的进程渲染，不受影响。
-        window.decorView.setLayerType(
-            android.view.View.LAYER_TYPE_SOFTWARE,
-            null
-        )
+        // 注：曾尝试 window.decorView.setLayerType(LAYER_TYPE_SOFTWARE) 强制软件渲染，
+        // 实测无效 —— 崩溃栈仍是 GrGLCompileAndAttachShader（HWUI 的 RenderThread
+        // 依旧走 GL）。真正原因是容器的 native hook 污染了 GPU 驱动库，
+        // 已在 core/hook/src/main/cpp/native-hook.cpp 中修复（只 patch 应用库）。
     }
+}
 }
 
 @Composable

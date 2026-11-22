@@ -1637,6 +1637,31 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
         }
     }
 
+    // ============ 只 patch 应用自己的库（sandboxsensor 修复）============
+    // 实测：原逻辑会 patch /vendor/lib64/egl/ 下的 GPU 驱动
+    //   Hooked stat in /vendor/lib64/egl/libGLESv2_adreno.so (RELA)
+    //   Hooked fopen in /vendor/lib64/egl/libGLESv1_CM_adreno.so (RELA)
+    //   Hooked __system_property_get in .../eglSubDriverAndroid.so (RELA)
+    // 于是驱动在编译 shader 时调用 stat/fopen/__system_property_get，
+    // 进入容器的路径重定向实现，拿到异常输入后 abort：
+    //   GrGLCompileAndAttachShader -> libGLESv2_adreno -> libllvm-glnext -> abort
+    // 这在每个"新的 shader 变体"上都会复现，表现为 RenderThread 随机 SIGABRT。
+    // 修复：只 patch 应用/沙箱路径下的库；/vendor /system /apex 一律跳过。
+    if (lib_name != nullptr) {
+        const bool is_app_lib =
+            strstr(lib_name, "/data/app/") != nullptr ||
+            strstr(lib_name, "/data/user/") != nullptr ||
+            strstr(lib_name, "/virtual/") != nullptr;
+        const bool is_sys_lib =
+            strstr(lib_name, "/vendor/") != nullptr ||
+            strstr(lib_name, "/system/") != nullptr ||
+            strstr(lib_name, "/apex/") != nullptr;
+        if (is_sys_lib || !is_app_lib) {
+            LOGI("GOT patch skipped (system/vendor lib): %s", lib_name);
+            return;
+        }
+    }
+
     if (symtab == nullptr || strtab == nullptr) return;
     if (rel_plt == nullptr && rela_plt == nullptr) return;
 
