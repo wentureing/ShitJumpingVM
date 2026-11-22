@@ -214,6 +214,30 @@ static void patch_newly_loaded_libraries();
 // ==================== Path Redirection Logic ====================
 
 /**
+ * 导入通道只读豁免（sandboxsensor p18）。
+ *
+ * 背景：CmdReceiver 的 INSTALL 走「路径通道」——File(apkPath) -> FileInputStream
+ * -> open()，会被 redirect_path() 把 /sdcard 改写到沙箱，于是读不到真实 APK
+ * （报 "APK file not found"）。而容器 UI 的「browse APK」走 SAF
+ * (ACTION_OPEN_DOCUMENT) -> ContentResolver.openInputStream() -> 拿到 **fd**，
+ * fd 已打开、不过路径解析，所以 UI 能导入、命令行不能。
+ *
+ * 这里对「导入用的公共目录」放行只读访问，让 INSTALL 一条命令就能吃
+ * /sdcard/Download/*.apk，不必再 push + run-as 复制。
+ *
+ * 约束：
+ *   * 只豁免只读（O_RDONLY）；写通道留待后续，且必须过 caller_is_guest 检查，
+ *     防止 guest 污染公共目录。
+ *   * 只豁免公共/临时目录，guest 本来就能访问，不算新增泄漏。
+ */
+static bool is_import_read_exempt(const char* path) {
+    if (path == nullptr || path[0] != '/') return false;
+    return strncmp(path, "/sdcard/Download/", 18) == 0 ||
+           strncmp(path, "/storage/emulated/0/Download/", 30) == 0 ||
+           strncmp(path, "/data/local/tmp/", 17) == 0;
+}
+
+/**
  * Check if a path is hidden.
  */
 static bool is_path_hidden(const char* path) {
@@ -670,6 +694,12 @@ static int hooked_open(const char* path, int flags, ...) {
         }
     }
 
+    // 导入通道只读豁免（p18）：让 INSTALL 能直接读 /sdcard/Download/*.apk
+    if ((flags & O_ACCMODE) == O_RDONLY && is_import_read_exempt(path)) {
+        LOGD("open: import exempt (read): %s", path);
+        return real_open(path, flags);
+    }
+
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -704,6 +734,13 @@ static int hooked_openat(int dirfd, const char* path, int flags, ...) {
             int fd = make_proc_spoof_fd(kind, path);
             if (fd >= 0) return fd;
         }
+    }
+
+    // 导入通道只读豁免（p18），见 is_import_read_exempt 的注释
+    if (path != nullptr && path[0] == '/' &&
+        (flags & O_ACCMODE) == O_RDONLY && is_import_read_exempt(path)) {
+        LOGD("openat: import exempt (read): %s", path);
+        return real_openat(dirfd, path, flags);
     }
 
     std::string redirected = redirect_path(path);
