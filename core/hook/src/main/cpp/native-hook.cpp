@@ -1637,28 +1637,61 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
         }
     }
 
-    // ============ 只 patch 应用自己的库（sandboxsensor 修复）============
-    // 实测：原逻辑会 patch /vendor/lib64/egl/ 下的 GPU 驱动
-    //   Hooked stat in /vendor/lib64/egl/libGLESv2_adreno.so (RELA)
-    //   Hooked fopen in /vendor/lib64/egl/libGLESv1_CM_adreno.so (RELA)
-    //   Hooked __system_property_get in .../eglSubDriverAndroid.so (RELA)
-    // 于是驱动在编译 shader 时调用 stat/fopen/__system_property_get，
-    // 进入容器的路径重定向实现，拿到异常输入后 abort：
-    //   GrGLCompileAndAttachShader -> libGLESv2_adreno -> libllvm-glnext -> abort
-    // 这在每个"新的 shader 变体"上都会复现，表现为 RenderThread 随机 SIGABRT。
-    // 修复：只 patch 应用/沙箱路径下的库；/vendor /system /apex 一律跳过。
+    // ============ Hook 作用域过滤（sandboxsensor）============
+    // 原则：**永远不 hook 容器自身的调用**，因为容器的路径重定向实现本身依赖
+    // 真实的 open/stat/fopen；一旦被自己拦截，宿主自身 IO 会被错误改写。
+    //
+    // 优先级从高到低（先排除，再决定是否 patch）：
+    //   1) 容器自身（宿主 APK 的 lib 目录、libnextvm-native.so）  -> 永不 patch
+    //   2) 图形栈（Adreno EGL/GLES/Vulkan 驱动、libllvm-glnext）  -> 永不 patch
+    //      实测 patch 后驱动编译 shader 时拿不到正确缓存/属性 -> abort
+    //   3) 应用/沙箱库（/data/app、/data/user、/virtual）          -> patch
+    //   4) 其他系统库（/system、/apex、/vendor 的非图形库）        -> 由宏控制
+    //      NS_HOOK_SYSTEM_LIBS=0（默认）：不 patch，避免改坏系统库的运行前提
+    //      NS_HOOK_SYSTEM_LIBS=1：patch，用于覆盖"系统库代应用访问文件"
+    //      （libsqlite / libmediandk / libwebviewchromium 等），需逐个验证
+#ifndef NS_HOOK_SYSTEM_LIBS
+#define NS_HOOK_SYSTEM_LIBS 0
+#endif
+
     if (lib_name != nullptr) {
+        // 1) 容器自身：宿主包名下的库 或 容器 native 引擎
+        const bool is_self =
+            strstr(lib_name, "com.nextvm.app") != nullptr ||
+            strstr(lib_name, "libnextvm") != nullptr;
+        if (is_self) {
+            LOGI("GOT patch skipped (container self): %s", lib_name);
+            return;
+        }
+
+        // 2) 图形栈：patch 后会导致 shader 编译 abort
+        const bool is_graphics =
+            strstr(lib_name, "libGLES") != nullptr ||
+            strstr(lib_name, "libEGL") != nullptr ||
+            strstr(lib_name, "eglSubDriver") != nullptr ||
+            strstr(lib_name, "libvulkan") != nullptr ||
+            strstr(lib_name, "vulkan.adreno") != nullptr ||
+            strstr(lib_name, "libllvm-glnext") != nullptr;
+        if (is_graphics) {
+            LOGI("GOT patch skipped (graphics stack): %s", lib_name);
+            return;
+        }
+
+        // 3) 应用/沙箱库：始终 patch
         const bool is_app_lib =
             strstr(lib_name, "/data/app/") != nullptr ||
             strstr(lib_name, "/data/user/") != nullptr ||
             strstr(lib_name, "/virtual/") != nullptr;
-        const bool is_sys_lib =
-            strstr(lib_name, "/vendor/") != nullptr ||
-            strstr(lib_name, "/system/") != nullptr ||
-            strstr(lib_name, "/apex/") != nullptr;
-        if (is_sys_lib || !is_app_lib) {
-            LOGI("GOT patch skipped (system/vendor lib): %s", lib_name);
+        if (is_app_lib) {
+            // fallthrough：继续 patch
+        } else {
+            // 4) 其余系统库：由编译期宏决定
+#if NS_HOOK_SYSTEM_LIBS
+            // 允许 patch 系统库（用于覆盖系统库代访问场景），但仍跳过图形栈
+#else
+            LOGI("GOT patch skipped (system lib, NS_HOOK_SYSTEM_LIBS=0): %s", lib_name);
             return;
+#endif
         }
     }
 
