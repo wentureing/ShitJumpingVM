@@ -53,7 +53,6 @@ class MainActivity : ComponentActivity() {
         // 已在 core/hook/src/main/cpp/native-hook.cpp 中修复（只 patch 应用库）。
     }
 }
-}
 
 @Composable
 fun NextVmApp() {
