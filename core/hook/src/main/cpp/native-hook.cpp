@@ -1719,24 +1719,7 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
             strstr(lib_name, "/data/app/") != nullptr ||
             strstr(lib_name, "/data/user/") != nullptr ||
             strstr(lib_name, "/virtual/") != nullptr;
-
-        // 3.5) WebView 栈：**必须 patch**（精确白名单，不是打开 NS_HOOK_SYSTEM_LIBS）
-        //
-        // 实测（docs/records/webview-rootcause-20261122.md）：
-        //   WebView 的库被 NS_HOOK_SYSTEM_LIBS=0 跳过后，它在容器内读本地资源
-        //   不走容器路径翻译，表现为：
-        //     * Via 主页（本地 HTML）被当纯文本显示源码
-        //     * Via 里长按文字 -> 选中区域出现但无法交互 -> ANR
-        //   而容器内普通 TextView 的选择菜单完全正常（复制/全选/搜索/分享 都在），
-        //   证明问题不是容器 WindowManager/PopupWindow，而是 WebView 自身。
-        //
-        // 为什么只放行 libwebviewchromium*：
-        //   GPU 驱动（libGLES*/libEGL*）被 patch 会导致 shader 编译 abort，
-        //   所以不能把系统库整体打开；这里只针对 WebView 的这几个库。
-        const bool is_webview =
-            strstr(lib_name, "libwebviewchromium") != nullptr;
-
-        if (is_app_lib || is_webview) {
+        if (is_app_lib) {
             // fallthrough：继续 patch
         } else {
             // 4) 其余系统库：由编译期宏决定
