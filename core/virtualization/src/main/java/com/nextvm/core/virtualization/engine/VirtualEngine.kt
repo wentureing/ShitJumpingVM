@@ -518,7 +518,7 @@ class VirtualEngine @Inject constructor(
     /**
      * Launch a virtual app by its instance ID.
      */
-    fun launchApp(instanceId: String): VmResult<Unit> {
+    fun launchApp(instanceId: String, activityName: String? = null): VmResult<Unit> {
         ensureInitialized()
 
         val app = findApp(instanceId)
@@ -528,7 +528,11 @@ class VirtualEngine @Inject constructor(
 
         try {
             // 1. Find main activity (from VPMS, the real service)
-            val mainActivity = app.mainActivity
+            // activityName 优先（命令行 LAUNCH_ACTIVITY 用）；否则回退到 LAUNCHER。
+            // 容器在启动 guest 时只解析 LAUNCHER 组件，因此「启动任意 Activity」
+            // 必须走这条显式通道（sandboxsensor 补丁）。
+            val mainActivity = activityName?.takeIf { it.isNotBlank() }
+                ?: app.mainActivity
                 ?: serviceManager.packageManager.getMainActivity(app.packageName)
                 ?: return VmResult.Error("No main activity found for ${app.packageName}")
 
@@ -1242,10 +1246,10 @@ class VirtualEngine @Inject constructor(
     /**
      * Launch a virtual app by package name (finds first matching instance).
      */
-    fun launchAppByPackage(packageName: String): VmResult<Unit> {
+    fun launchAppByPackage(packageName: String, activityName: String? = null): VmResult<Unit> {
         val app = findAppByPackage(packageName)
             ?: return VmResult.Error("No virtual app found for package: $packageName")
-        return launchApp(app.instanceId)
+        return launchApp(app.instanceId, activityName)
     }
 
     /**

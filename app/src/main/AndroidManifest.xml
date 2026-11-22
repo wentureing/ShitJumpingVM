@@ -310,6 +310,18 @@
         <provider android:name=".stub.P9$CP01" android:process=":p9" android:exported="false" android:authorities="com.nextvm.vt.p9.cp01" />
         <receiver android:name=".stub.P9$R00" android:process=":p9" android:exported="false" />
 
+        <!--
+          命令行入口（sandboxsensor 补丁，见 CmdReceiver.kt）。
+          支持：INSTALL / LAUNCH / LAUNCH_ACTIVITY / UNINSTALL / LIST
+          结果打到 logcat -s CmdReceiver。
+
+          注意：容器启动 guest 时只解析 LAUNCHER 组件，所以「启动任意 Activity」
+          只能通过 LAUNCH_ACTIVITY 走本 receiver。
+        -->
+        <receiver
+            android:name=".CmdReceiver"
+            android:exported="true" />
+
     </application>
 
 </manifest>
