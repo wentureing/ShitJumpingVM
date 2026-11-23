@@ -10,21 +10,21 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.io.File
 import java.nio.file.Files
 
 /**
- * HostReadPolicy 的 15 条用例（sandboxsensor P1-2）。
+ * HostReadPolicy 的 17 条用例（sandboxsensor P1-2）。
+ *
+ * **为什么不用 Robolectric**：被测的 HostReadPolicy 只依赖 java.io.File
+ * 与 canonicalPath，是纯 JVM 逻辑，不需要 Android 运行时。
+ * Robolectric 会额外拉 android-all-instrumented（Android 15 的约 100 MB jar），
+ * 在 CI 里下载不稳定（p23 的 19 个用例全因它失败）。纯 JUnit 零下载、秒级完成。
  *
  * 覆盖：正常路径、`..` 逃逸、前缀攻击、跨实例、其他应用、系统目录、
  *      容器外部、导入目录、非白名单公共目录、空输入、深逃逸、软链、
  *      尾斜杠、NUL 注入、超长路径。
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
 class HostReadPolicyTest {
 
     @get:Rule
