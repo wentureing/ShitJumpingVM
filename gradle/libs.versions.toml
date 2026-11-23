@@ -16,6 +16,10 @@ timber = "5.0.1"
 datastore = "1.1.1"
 gson = "2.11.0"
 hiddenapibypass = "6.1"
+# --- 单元测试 ---
+# Robolectric 4.14 是官方兼容表里唯一同时满足 compileSdk 35 / AGP 8.7.x / Gradle 8.9 的版本
+robolectric = "4.14"
+junit = "4.13.2"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
@@ -41,6 +45,9 @@ timber = { group = "com.jakewharton.timber", name = "timber", version.ref = "tim
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 hiddenapibypass = { group = "org.lsposed.hiddenapibypass", name = "hiddenapibypass", version.ref = "hiddenapibypass" }
+
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

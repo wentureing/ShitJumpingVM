@@ -14,6 +14,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    testOptions {
+        unitTests {
+            // Robolectric 需要读取 android 资源
+            isIncludeAndroidResources = true
+            // 让单测失败时把异常栈完整打出来（默认会吞）
+            all { it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL } }
+        }
+    }
 }
 
 dependencies {
@@ -26,4 +35,8 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
+
+    // --- 单元测试（P1-2）---
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
 }
