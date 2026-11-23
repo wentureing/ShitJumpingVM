@@ -3,7 +3,9 @@ package com.nextvm.app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Base64
 import android.util.Log
+import com.nextvm.core.sandbox.SandboxManager
 import com.nextvm.core.virtualization.engine.VirtualEngine
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -50,6 +52,7 @@ class CmdReceiver : BroadcastReceiver() {
     @InstallIn(SingletonComponent::class)
     interface CmdEntryPoint {
         fun engine(): VirtualEngine
+        fun sandbox(): SandboxManager
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -62,6 +65,16 @@ class CmdReceiver : BroadcastReceiver() {
         } catch (t: Throwable) {
             Log.e(TAG, "engine unavailable: ${t.message}", t)
             return
+        }
+        // 探针输出导出用的沙箱管理器（与 engine 分开取，任一方缺失不影响另一方）
+        val sandbox = try {
+            EntryPointAccessors.fromApplication(
+                context.applicationContext,
+                CmdEntryPoint::class.java
+            ).sandbox()
+        } catch (t: Throwable) {
+            Log.e(TAG, "sandbox unavailable: ${t.message}", t)
+            null
         }
 
         when (action) {
@@ -126,8 +139,98 @@ class CmdReceiver : BroadcastReceiver() {
                 }
             }
 
+            ACTION_COLLECT_OUT -> {
+                if (sandbox == null) {
+                    Log.e(TAG, "COLLECT_OUT: sandbox unavailable")
+                    return
+                }
+                try {
+                    val collected = sandbox.collectProbeOutput()
+                    collected.forEach {
+                        Log.i(
+                            TAG,
+                            "COLLECT instance=${it.instanceId} name=${it.name} " +
+                                "bytes=${it.bytes} sha=${it.sha256.take(8)}"
+                        )
+                    }
+                    Log.i(TAG, "COLLECT_OUT done files=${collected.size}")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "COLLECT_OUT failed: ${t.message}", t)
+                }
+            }
+
+            ACTION_LIST_OUT -> {
+                if (sandbox == null) {
+                    Log.e(TAG, "LIST_OUT: sandbox unavailable")
+                    return
+                }
+                try {
+                    val list = sandbox.listProbeOutput()
+                    list.forEach {
+                        Log.i(
+                            TAG,
+                            "OUT ${it.instanceId} ${it.name} ${it.bytes} sha=${it.sha256.take(8)}"
+                        )
+                    }
+                    Log.i(TAG, "LIST_OUT done files=${list.size}")
+                } catch (t: Throwable) {
+                    Log.e(TAG, "LIST_OUT failed: ${t.message}", t)
+                }
+            }
+
+            ACTION_CAT_OUT -> {
+                if (sandbox == null) {
+                    Log.e(TAG, "CAT_OUT: sandbox unavailable")
+                    return
+                }
+                val instance = intent.getStringExtra("instance")
+                val name = intent.getStringExtra("name")
+                if (instance.isNullOrBlank() || name.isNullOrBlank()) {
+                    Log.w(TAG, "CAT_OUT: missing --es instance / --es name")
+                    return
+                }
+                val bytes = sandbox.readProbeOutput(instance, name)
+                if (bytes == null) {
+                    Log.e(
+                        TAG,
+                        "CAT_OUT failed: invalid or missing instance=$instance name=$name " +
+                            "(instance 只允许字母数字._- 且不含 ..；name 必须白名单)"
+                    )
+                    return
+                }
+                emitOutChunks(instance, name, bytes)
+            }
+
             else -> Log.w(TAG, "unknown action: $action")
         }
+    }
+
+    /**
+     * 把文件内容分块 base64 打到 logcat。
+     *
+     * 格式与探针的 `REPORT v1 part i/n` 同构，[tools/extract-report.py] 的分块还原逻辑
+     * 可以直接复用；`end` 行带 sha256，便于校验完整性。
+     */
+    private fun emitOutChunks(instance: String, name: String, bytes: ByteArray) {
+        val chunkSize = 3 * 1024 // 原始 3KB -> base64 约 4KB，留出 logcat 单行余量
+        val total = if (bytes.isEmpty()) 0 else (bytes.size + chunkSize - 1) / chunkSize
+        for (i in 0 until total) {
+            val from = i * chunkSize
+            val to = minOf(from + chunkSize, bytes.size)
+            val b64 = Base64.encodeToString(bytes.copyOfRange(from, to), Base64.NO_WRAP)
+            Log.i(TAG, "OUTCHUNK v1 part ${i + 1}/$total $b64")
+        }
+        val sha = try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            md.update(bytes)
+            md.digest().joinToString("") { "%02x".format(it) }
+        } catch (t: Throwable) {
+            "?"
+        }
+        Log.i(
+            TAG,
+            "OUTCHUNK v1 end instance=$instance name=$name parts=$total bytes=${bytes.size} sha=$sha"
+        )
     }
 
     companion object {
@@ -137,5 +240,10 @@ class CmdReceiver : BroadcastReceiver() {
         const val ACTION_LAUNCH_ACTIVITY = "com.nextvm.cmd.LAUNCH_ACTIVITY"
         const val ACTION_UNINSTALL = "com.nextvm.cmd.UNINSTALL"
         const val ACTION_LIST = "com.nextvm.cmd.LIST"
+
+        // --- 探针输出导出（P0-2）---
+        const val ACTION_COLLECT_OUT = "com.nextvm.cmd.COLLECT_OUT"
+        const val ACTION_LIST_OUT = "com.nextvm.cmd.LIST_OUT"
+        const val ACTION_CAT_OUT = "com.nextvm.cmd.CAT_OUT"
     }
 }

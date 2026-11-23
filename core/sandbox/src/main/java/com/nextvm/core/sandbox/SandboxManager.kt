@@ -64,6 +64,16 @@ class SandboxManager @Inject constructor(
             "Recordings",
             "Ringtones"
         )
+
+        /** 探针输出里允许收集的文件名（白名单，不做通配）。 */
+        private val PROBE_OUTPUT_NAMES = listOf(
+            "probe-report.json",
+            "probe-early.json",
+            "selfcheck.json"
+        )
+
+        /** 导出目录名（与沙箱根 files/virtual 平级，guest 看不到）。 */
+        private const val PROBE_OUT_DIR = "probe-out"
     }
 
     private val dataRoot = File(virtualRoot, VirtualConstants.VIRTUAL_DATA_DIR)
@@ -371,5 +381,147 @@ class SandboxManager @Inject constructor(
         }
 
         return path
+    }
+
+    // ==================== 探针输出收集（sandboxsensor P0-2）====================
+
+    /** 已收集 / 已导出的一份探针输出。 */
+    data class CollectedFile(
+        val instanceId: String,
+        val name: String,
+        val bytes: Long,
+        val sha256: String
+    )
+
+    /** 导出目录：与沙箱根 `files/virtual` 平级，不参与 guest 路径翻译，guest 看不到。 */
+    val probeOutRoot: File
+        get() = File(context.filesDir, PROBE_OUT_DIR)
+
+    /**
+     * 把各 guest 沙箱里的探针输出收集到容器私有目录。
+     *
+     * ⚠️ 用真实沙箱根 `files/virtual/data`，**不用** `virtualRoot`：
+     *    后者是 `app_virtual`（本类的注入根，实测是空壳），
+     *    真实 guest 数据在 `files/virtual/data`。
+     *    详见 docs/records/记录-双轨沙箱路径诊断.md
+     */
+    fun collectProbeOutput(): List<CollectedFile> {
+        val realDataRoot = File(
+            context.filesDir,
+            "${VirtualConstants.VIRTUAL_DIR}/${VirtualConstants.VIRTUAL_DATA_DIR}"
+        )
+        val outRoot = probeOutRoot.apply { mkdirs() }
+        val results = mutableListOf<CollectedFile>()
+
+        val instances = realDataRoot.listFiles() ?: return emptyList()
+        for (inst in instances) {
+            if (!inst.isDirectory) continue
+            val filesDir = File(inst, "files")
+            if (!filesDir.isDirectory) continue
+            for (name in PROBE_OUTPUT_NAMES) {
+                val src = File(filesDir, name)
+                if (!src.isFile) continue
+                val dstDir = File(outRoot, inst.name).apply { mkdirs() }
+                val dst = File(dstDir, name)
+                val copied = runCatching { src.copyTo(dst, overwrite = true) }
+                    .getOrElse { e ->
+                        Timber.tag(TAG).w(e, "collect %s/%s failed", inst.name, name)
+                        null
+                    } ?: continue
+                val sha = sha256Of(dst)
+                runCatching {
+                    File(dstDir, "meta.txt").writeText(
+                        "instance=${inst.name}\n" +
+                            "name=$name\n" +
+                            "src=${src.absolutePath}\n" +
+                            "dst=${dst.absolutePath}\n" +
+                            "bytes=${dst.length()}\n" +
+                            "sha256=$sha\n" +
+                            "collectedAt=${System.currentTimeMillis()}\n"
+                    )
+                }
+                results += CollectedFile(inst.name, name, copied.length(), sha)
+            }
+        }
+        writeProbeOutIndex(outRoot, results)
+        Timber.tag(TAG).i("collectProbeOutput: %d file(s)", results.size)
+        return results
+    }
+
+    /** 列出已收集的文件（供 CmdReceiver 的 LIST_OUT 用）。 */
+    fun listProbeOutput(): List<CollectedFile> {
+        val out = mutableListOf<CollectedFile>()
+        val instDirs = probeOutRoot.listFiles() ?: return emptyList()
+        for (instDir in instDirs) {
+            if (!instDir.isDirectory) continue
+            val fs = instDir.listFiles() ?: continue
+            for (f in fs) {
+                if (f.isFile && PROBE_OUTPUT_NAMES.contains(f.name)) {
+                    out += CollectedFile(instDir.name, f.name, f.length(), sha256Of(f))
+                }
+            }
+        }
+        return out.sortedWith(compareBy({ it.instanceId }, { it.name }))
+    }
+
+    /**
+     * 读取指定导出文件。instance 或 name 不合法、文件不存在则返回 null。
+     *
+     * 校验：
+     *   * instance 只允许 `[A-Za-z0-9._-]`，长度 <= 128，且不含 `..`
+     *   * name 必须在白名单里（不做通配）
+     */
+    fun readProbeOutput(instanceId: String, name: String): ByteArray? {
+        if (!isSafeInstanceId(instanceId)) return null
+        if (!PROBE_OUTPUT_NAMES.contains(name)) return null
+        val f = File(File(probeOutRoot, instanceId), name)
+        if (!f.isFile) return null
+        return runCatching { f.readBytes() }.getOrNull()
+    }
+
+    private fun isSafeInstanceId(s: String): Boolean {
+        if (s.isEmpty() || s.length > 128) return false
+        if (s.contains("..")) return false
+        for (c in s) {
+            val ok = c.isLetterOrDigit() || c == '.' || c == '_' || c == '-'
+            if (!ok) return false
+        }
+        return true
+    }
+
+    private fun sha256Of(f: File): String = try {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        f.inputStream().use { ins ->
+            val buf = ByteArray(8192)
+            while (true) {
+                val n = ins.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (t: Throwable) {
+        Timber.tag(TAG).w(t, "sha256 failed for %s", f.name)
+        "?"
+    }
+
+    private fun writeProbeOutIndex(root: File, items: List<CollectedFile>) {
+        val sb = StringBuilder("[\n")
+        items.forEachIndexed { i, c ->
+            sb.append("  {\"instance\":\"")
+                .append(c.instanceId)
+                .append("\",\"name\":\"")
+                .append(c.name)
+                .append("\",\"bytes\":")
+                .append(c.bytes)
+                .append(",\"sha256\":\"")
+                .append(c.sha256)
+                .append("\"}")
+            if (i != items.lastIndex) sb.append(',')
+            sb.append('\n')
+        }
+        sb.append("]\n")
+        runCatching { File(root, "index.json").writeText(sb.toString()) }
+            .onFailure { Timber.tag(TAG).w(it, "write index.json failed") }
     }
 }
