@@ -14,8 +14,11 @@ android {
         applicationId = "com.nextvm.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0-alpha01"
+        // CI 里用 GITHUB_RUN_NUMBER 单调递增，本地默认 1；
+        // 递增的 versionCode 才能让 adb install -r 覆盖安装（配合固定 keystore）。
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        // 带上提交短 sha，便于对照 Release 产物文件名。
+        versionName = "1.0.0-" + (System.getenv("GITHUB_SHA")?.take(7) ?: "local")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

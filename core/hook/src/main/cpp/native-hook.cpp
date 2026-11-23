@@ -769,6 +769,13 @@ static int hooked_access(const char* path, int mode) {
         return -1;
     }
 
+    // 导入通道读豁免（p18 补全）：File.exists()/stat()/fopen() 也必须放行，
+    // 否则 installApp 里 File(apkPath).exists() 走 access() 会被重定向到沙箱，
+    // 直接报 "APK file not found"（实测：/sdcard/Download 失败而 /data/local/tmp 成功）。
+    if (is_import_read_exempt(path)) {
+        return real_access(path, mode);
+    }
+
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -784,6 +791,13 @@ static int hooked_stat(const char* path, struct stat* buf) {
         return -1;
     }
 
+        // 导入通道读豁免（p18 补全）：File.exists()/stat()/fopen() 也必须放行，
+    // 否则 installApp 里 File(apkPath).exists() 走 access() 会被重定向到沙箱，
+    // 直接报 "APK file not found"（实测：/sdcard/Download 失败而 /data/local/tmp 成功）。
+    if (is_import_read_exempt(path)) {
+        return real_stat(path, buf);
+    }
+
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -797,6 +811,11 @@ static int hooked_lstat(const char* path, struct stat* buf) {
     if (is_path_hidden(path)) {
         errno = ENOENT;
         return -1;
+    }
+
+        // 导入通道读豁免（p18 补全），见 hooked_access 的注释
+    if (is_import_read_exempt(path)) {
+        return real_lstat(path, buf);
     }
 
     std::string redirected = redirect_path(path);
@@ -929,6 +948,11 @@ static FILE* hooked_fopen(const char* path, const char* mode) {
                 return tmp;
             }
         }
+    }
+
+        // 导入通道读豁免（p18 补全）：仅对只读模式放行
+    if (mode != nullptr && mode[0] == 'r' && is_import_read_exempt(path)) {
+        return real_fopen(path, mode);
     }
 
     std::string redirected = redirect_path(path);
