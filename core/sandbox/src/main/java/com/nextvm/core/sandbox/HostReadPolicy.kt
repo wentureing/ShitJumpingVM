@@ -10,9 +10,9 @@ import java.io.File
  * 打开了它本不该打开的文件**，所以必须有严格的白名单，否则等于给 guest 开后门。
  *
  * 允许范围（默认拒绝）：
- *   1) guest 自己的沙箱      <sandboxDataRoot>/<instanceId>/**
- *   2) 容器自己的外部目录    <externalRoot>/Android/data/com.nextvm.app/**
- *   3) 导入目录              <externalRoot>/Download/**     （与 p18 导入豁免同一语义）
+ *   1) guest 自己的沙箱      <sandboxDataRoot>/<instanceId>/ 下的任意路径
+ *   2) 容器自己的外部目录    <externalRoot>/Android/data/com.nextvm.app/ 下的任意路径
+ *   3) 导入目录              <externalRoot>/Download/ 下的任意路径（与 p18 导入豁免同一语义）
  *
  * 拒绝：其他 guest 的沙箱、其他应用、/system、/vendor、/apex、其余公共目录。
  *
