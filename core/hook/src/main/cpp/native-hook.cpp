@@ -772,7 +772,9 @@ static int hooked_access(const char* path, int mode) {
     // 导入通道读豁免（p18 补全）：File.exists()/stat()/fopen() 也必须放行，
     // 否则 installApp 里 File(apkPath).exists() 走 access() 会被重定向到沙箱，
     // 直接报 "APK file not found"（实测：/sdcard/Download 失败而 /data/local/tmp 成功）。
-    if (is_import_read_exempt(path)) {
+    // 只放行只读检查：access(path, W_OK) 不能被豁免，否则 guest 能探测写权限
+    // （mode 里 W_OK=2；F_OK=0、R_OK=4 都满足 (mode & W_OK) == 0）
+    if (is_import_read_exempt(path) && (mode & W_OK) == 0) {
         return real_access(path, mode);
     }
 
@@ -951,7 +953,10 @@ static FILE* hooked_fopen(const char* path, const char* mode) {
     }
 
         // 导入通道读豁免（p18 补全）：仅对只读模式放行
-    if (mode != nullptr && mode[0] == 'r' && is_import_read_exempt(path)) {
+    // 只放行纯只读："r+"/"rb+"/"w+" 都是可写，必须排除。
+    // strchr(mode, '+') == nullptr 才能真正保证不可写。
+    if (is_import_read_exempt(path) && mode != nullptr &&
+        mode[0] == 'r' && strchr(mode, '+') == nullptr) {
         return real_fopen(path, mode);
     }
 
