@@ -212,7 +212,10 @@ class CmdReceiver : BroadcastReceiver() {
      * 可以直接复用；`end` 行带 sha256，便于校验完整性。
      */
     private fun emitOutChunks(instance: String, name: String, bytes: ByteArray) {
-        val chunkSize = 3 * 1024 // 原始 3KB -> base64 约 4KB，留出 logcat 单行余量
+        // logcat 单行上限约 4076 字符（LOGGER_ENTRY_MAX_PAYLOAD）。
+        // 原始 3KB -> base64 4096 字符会被截断（实测 part 长度 4033，不是 4 的倍数）。
+        // 取 2KB -> base64 2732 字符，稳在限额内。
+        val chunkSize = 2 * 1024
         val total = if (bytes.isEmpty()) 0 else (bytes.size + chunkSize - 1) / chunkSize
         for (i in 0 until total) {
             val from = i * chunkSize
