@@ -706,8 +706,6 @@ static int hooked_openat(int dirfd, const char* path, int flags, ...) {
         }
     }
 
-    if (path != nullptr && path[0] == '/' &&
-
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -894,10 +892,6 @@ static FILE* hooked_fopen(const char* path, const char* mode) {
                 return tmp;
             }
         }
-    }
-
-        mode[0] == 'r' && strchr(mode, '+') == nullptr) {
-        return real_fopen(path, mode);
     }
 
     std::string redirected = redirect_path(path);
