@@ -519,6 +519,12 @@ class VirtualApplicationManager @Inject constructor(
                     // WebViewWarmup 会主动预热 WebViewFactory，provider 一旦初始化，
                     // 它看到的 context 就固化了。
                     patchActivityThreadApplication(fwApp)
+                    // v139-fix：dataDir 的 patch 必须挂在 framework 路径上。
+                    // 之前只写在 injectGuestPathsIntoLoadedApk（legacy 路径的
+                    // attachBaseContext 里），而实测所有 guest 都走 framework 路径
+                    // -> 那段代码从未执行（探针 W37 证实）。
+                    // 同样必须早于 WebViewWarmup。
+                    patchFrameworkDataDir(fwApp, packageName)
                     registerBreadcrumbCallbacks(fwApp)
                     GuestBreadcrumb.log("bind complete (framework path)")
                     scheduleGuestStackDumps(packageName)
@@ -1130,6 +1136,73 @@ class VirtualApplicationManager @Inject constructor(
             }
         }
         throw NoSuchFieldException(name + " on " + cls.name)
+    }
+
+    /**
+     * v139-fix：在 **framework bind 路径**上 patch LoadedApk 的 dataDir。
+     *
+     * 为什么要单独一份：v139 原本只写在 `injectGuestPathsIntoLoadedApk`（由
+     * `attachBaseContext` 调用，属 legacy 路径）。实测所有 guest 都走
+     * `bindViaFrameworkLoadedApk`（日志 "bind complete (framework path)"），
+     * 那段代码从未执行 —— 探针 W37 用 `仍是沙箱路径=true` 证实了这一点。
+     *
+     * 目的：让 WebView 认为的 dataDir 与真实文件位置**不对齐**，从而不落进
+     * 「dataDir 内的 file://」那个不按扩展名判 MIME 的分支。
+     * URL 仍是真实沙箱路径，读取不受影响。
+     *
+     * 开关：`nextvm.webviewDataDirFake`（默认开）；第一批只对探针生效。
+     */
+    private fun patchFrameworkDataDir(application: android.app.Application, guestPkg: String) {
+        try {
+            val enabled = try {
+                System.getProperty("nextvm.webviewDataDirFake", "1") != "0"
+            } catch (_: Throwable) {
+                true
+            }
+            if (!enabled) {
+                GuestBreadcrumb.log("v139-datadir disabled by property")
+                return
+            }
+            if (guestPkg != "com.sandbox.probe") {
+                GuestBreadcrumb.log("v139-datadir skip (whitelist) pkg=" + guestPkg)
+                return
+            }
+            val fake = com.nextvm.core.model.VirtualConstants.syntheticDataDir(guestPkg)
+            val loadedApk = try {
+                fieldOf(application.javaClass, "mLoadedApk").get(application)
+            } catch (_: Throwable) {
+                null
+            }
+            if (loadedApk == null) {
+                GuestBreadcrumb.log("v139-datadir FAIL: mLoadedApk=null")
+                return
+            }
+            val parts = StringBuilder()
+            try {
+                val aiField = fieldOf(loadedApk.javaClass, "mApplicationInfo")
+                val ai = aiField.get(loadedApk) as? android.content.pm.ApplicationInfo
+                if (ai != null) {
+                    val before = ai.dataDir
+                    ai.dataDir = fake
+                    parts.append(" appInfo.dataDir ").append(before).append(" -> ").append(ai.dataDir)
+                } else {
+                    parts.append(" appInfo.dataDir: null")
+                }
+            } catch (t: Throwable) {
+                parts.append(" appInfo:").append(t.javaClass.simpleName)
+            }
+            try {
+                fieldOf(loadedApk.javaClass, "mDataDir").set(loadedApk, fake)
+                parts.append(" ; mDataDir -> ").append(fake)
+            } catch (t: Throwable) {
+                parts.append(" ; mDataDir:").append(t.javaClass.simpleName)
+            }
+            GuestBreadcrumb.log("v139-datadir pkg=" + guestPkg + parts)
+        } catch (t: Throwable) {
+            GuestBreadcrumb.log(
+                "v139-datadir FAILED: " + t.javaClass.simpleName + ": " + t.message
+            )
+        }
     }
 
     /**
