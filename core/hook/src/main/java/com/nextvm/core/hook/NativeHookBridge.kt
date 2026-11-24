@@ -282,10 +282,41 @@ class NativeHookBridge @Inject constructor() {
         ROOT_PATHS.forEach { hiddenPaths.add(it) }
         EMULATOR_PATHS.forEach { hiddenPaths.add(it) }
 
+        // v141: Java 层文件 I/O 重定向（RegisterNatives 替换 libcore.io.Linux 的
+        // native 方法）。必须在 native 库加载 + 路径规则同步之后安装，因为替换实现
+        // 会直接读 native 侧的 g_path_redirects 表。
+        //
+        // 安全边界：本方法在**主进程**已提前 return（上面的 P0-3 判断），所以这里
+        // 只会发生在 guest 进程；translate=false 时只打日志不改路径（空转验证）。
+        if (nativeHooksAvailable) {
+            val translate = try {
+                System.getProperty("nextvm.javaIoRedirect", "0") != "0"
+            } catch (_: Throwable) {
+                false
+            }
+            val ok = try {
+                nativeInstallJavaIoHooks(translate)
+            } catch (t: Throwable) {
+                Timber.tag(TAG).w(t, "nativeInstallJavaIoHooks failed")
+                false
+            }
+            Timber.tag(TAG).i(
+                "Java IO redirect hooks: installed=%s translate=%s", ok, translate
+            )
+            if (ok) {
+                javaIoHooksInstalled = true
+            }
+        }
+
         initialized = true
         Timber.tag(TAG).i("Native hook bridge initialized (java=$javaHooksInstalled, native=$nativeHooksAvailable)")
         return true
     }
+
+    /** v141：Java 层文件 I/O 重定向是否已安装（供诊断/探针读取） */
+    @Volatile
+    var javaIoHooksInstalled: Boolean = false
+        private set
 
     /**
      * Add a path redirection rule.
@@ -884,6 +915,14 @@ class NativeHookBridge @Inject constructor() {
      * Returns true on success.
      */
     private external fun nativeInstallRuntimeLoadHook(): Boolean
+
+    /**
+     * v141：用 RegisterNatives 替换 `libcore.io.Linux` 的 open/access，
+     * 让 **Java 层** 文件 I/O 也走路径重定向。
+     *
+     * @param translate false = 只打日志不改路径（空转验证）；true = 真正翻译
+     */
+    private external fun nativeInstallJavaIoHooks(translate: Boolean): Boolean
 
     /**
      * Check if the native library is loaded.

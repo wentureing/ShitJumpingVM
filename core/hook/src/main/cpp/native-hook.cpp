@@ -6417,4 +6417,131 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeInstallRuntimeLoadHook(
     return installNativeLoadHook(env) ? JNI_TRUE : JNI_FALSE;
 }
 
+// ==================== Java 层文件 I/O 重定向（v141） ====================
+//
+// 为什么需要：Java 层的 File/FileInputStream/FileOutputStream 最终都落到
+// libcore.io.Linux 的 **native** 方法（open/stat/access/...）。native GOT patch
+// 只覆盖被 patch 的 so，**Java 层完全没有覆盖** —— 探针 W19 用 Java 写 /sdcard
+// 得到 EPERM 就是证据。
+//
+// 这些是 native 方法，用 RegisterNatives 替换即可：不需要 ART hook，
+// 也不 patch libart 的代码段（RegisterNatives 是 ART 公开的 JNI API）。
+//
+// 安全边界（三层收敛）：
+//   1) 只在 guest 进程安装 —— NativeHookBridge.initNativeHooks() 已在主进程 return；
+//   2) translate=false 时只打日志、不改路径（空转验证，行为与原实现一致）；
+//   3) 只有命中 redirect_path() 的路径才会被改写。
+//
+// 本版只接管 open/access 两个方法（面最小）；stat/lstat/readlink/unlink/...
+// 留到空转验证通过后再逐个加。
+
+static std::atomic<bool> g_java_io_translate{false};
+static std::atomic<int> g_java_io_open_logs{0};
+
+/** 构造 java.io.FileDescriptor 并 setInt$(fd) */
+static jobject java_io_make_fd(JNIEnv* env, int fd) {
+    jclass cls = env->FindClass("java/io/FileDescriptor");
+    if (cls == nullptr) return nullptr;
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
+    jmethodID set_int = env->GetMethodID(cls, "setInt$", "(I)V");
+    jobject obj = nullptr;
+    if (ctor != nullptr && set_int != nullptr) {
+        obj = env->NewObject(cls, ctor);
+        if (obj != nullptr) env->CallVoidMethod(obj, set_int, fd);
+    }
+    env->DeleteLocalRef(cls);
+    return obj;
+}
+
+/** 把 jstring 路径解析成真实路径（translate 开关 + redirect_path 前缀匹配） */
+static void java_io_resolve(JNIEnv* env, jstring path, std::string* out) {
+    const char* raw = env->GetStringUTFChars(path, nullptr);
+    if (raw == nullptr) {
+        out->clear();
+        return;
+    }
+    if (g_java_io_translate.load()) {
+        std::string redirected = redirect_path(raw);
+        *out = redirected.empty() ? std::string(raw) : redirected;
+    } else {
+        *out = raw;
+    }
+    env->ReleaseStringUTFChars(path, raw);
+}
+
+static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
+                                      jint flags, jint mode) {
+    if (path == nullptr) return nullptr;
+    std::string real;
+    java_io_resolve(env, path, &real);
+    if (real.empty()) return nullptr;
+
+    int n = ++g_java_io_open_logs;
+    if (n <= 300) {
+        LOGI("JavaIo open%s: %s (flags=0x%x)",
+             g_java_io_translate.load() ? "" : "[nofix]",
+             real.c_str(), static_cast<unsigned>(flags));
+    }
+
+    // 直接调真实 libc（本 .so 属于「容器自身库」，永不被 GOT patch，所以这里是真 open）
+    int fd = ::open(real.c_str(), flags, mode);
+    if (fd < 0) {
+        jclass nfe = env->FindClass("java/io/FileNotFoundException");
+        if (nfe != nullptr) {
+            env->ThrowNew(nfe, real.c_str());
+            env->DeleteLocalRef(nfe);
+        }
+        return nullptr;
+    }
+    return java_io_make_fd(env, fd);
+}
+
+static jboolean hooked_java_linux_access(JNIEnv* env, jclass, jstring path, jint mode) {
+    if (path == nullptr) return JNI_FALSE;
+    std::string real;
+    java_io_resolve(env, path, &real);
+    if (real.empty()) return JNI_FALSE;
+    return (::access(real.c_str(), mode) == 0) ? JNI_TRUE : JNI_FALSE;
+}
+
+static bool install_java_io_hooks(JNIEnv* env, bool translate) {
+    g_java_io_translate.store(translate);
+
+    jclass cls = env->FindClass("libcore/io/Linux");
+    if (cls == nullptr) {
+        LOGE("installJavaIoHooks: cannot find libcore/io/Linux");
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return false;
+    }
+
+    JNINativeMethod methods[] = {
+        {const_cast<char*>("open"),
+         const_cast<char*>("(Ljava/lang/String;II)Ljava/io/FileDescriptor;"),
+         reinterpret_cast<void*>(hooked_java_linux_open)},
+        {const_cast<char*>("access"),
+         const_cast<char*>("(Ljava/lang/String;I)Z"),
+         reinterpret_cast<void*>(hooked_java_linux_access)},
+    };
+
+    jint r = env->RegisterNatives(cls, methods, 2);
+    env->DeleteLocalRef(cls);
+    if (r != JNI_OK) {
+        LOGE("installJavaIoHooks: RegisterNatives failed code=%d", r);
+        return false;
+    }
+    LOGI("installJavaIoHooks: SUCCESS (translate=%d)", translate ? 1 : 0);
+    return true;
+}
+
+/**
+ * JNI bridge for NativeHookBridge.nativeInstallJavaIoHooks(translate)
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeInstallJavaIoHooks(
+    JNIEnv* env, jobject thiz, jboolean translate)
+{
+    (void)thiz;
+    return install_java_io_hooks(env, translate == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
 } // extern "C"
