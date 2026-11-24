@@ -2829,7 +2829,7 @@ class VirtualApplicationManager @Inject constructor(
 
     @Volatile private var loginProbeLastActivity: android.app.Activity? = null
     @Volatile private var loginProbeTimerStarted = false
-    @Volatile private var loginProbeLastSig: String? = null
+    @Volatile internal var loginProbeLastSig: String? = null
 
     // v130-watchdog: main-looper stall sampler state.
     private var watchdogStarted = false
@@ -2933,6 +2933,11 @@ class VirtualApplicationManager @Inject constructor(
      * arrived; with it, CLICKED = the body ran, no CLICKED = input
      * never reached the view.
      */
+    /** v155：给 CustomerProbes 用的构造入口（同 newV134ClickWrapper）。 */
+    internal fun newV125ClickWrapper(
+        original: android.view.View.OnClickListener
+    ): android.view.View.OnClickListener = V125ClickWrapper(original)
+
     private class V125ClickWrapper(
         private val original: android.view.View.OnClickListener
     ) : android.view.View.OnClickListener {

@@ -491,7 +491,7 @@ import timber.log.Timber
                 !cur.javaClass.name.contains("V125ClickWrapper")
             ) {
                 try {
-                    v125Field?.set(v125Info, V125ClickWrapper(cur))
+                    v125Field?.set(v125Info, newV125ClickWrapper(cur))
                     GuestBreadcrumb.log(
                         "v125-login-probe listener wrapped " +
                             "view=${target.javaClass.name}"
