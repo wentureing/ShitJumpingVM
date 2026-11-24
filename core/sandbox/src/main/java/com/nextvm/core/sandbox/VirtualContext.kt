@@ -237,63 +237,76 @@ class VirtualContext(
     override fun getOpPackageName(): String = VirtualConstants.HOST_PACKAGE
 
     override fun getApplicationInfo(): ApplicationInfo {
-        return super.getApplicationInfo().apply {
-            packageName = guestPackageName
-            dataDir = appDir.absolutePath
-            nativeLibraryDir = sandboxManager.getLibDir(instanceId).absolutePath
-            // Set sourceDir/publicSourceDir to the guest APK so that ReLinker,
-            // GMS, and other libraries that read sourceDir to find native libs
-            // or resources in the APK can locate the correct file.
-            val guestApkPath = sandboxManager.getApkPath(instanceId)
-            if (guestApkPath != null) {
-                sourceDir = guestApkPath
-                publicSourceDir = guestApkPath
-            }
+        // v140：**返回副本**，绝不原地修改 LoadedApk.mApplicationInfo。
+        //
+        // 之前是 `super.getApplicationInfo().apply { ... }`，而 super 返回的是
+        // ContextImpl -> LoadedApk.mApplicationInfo 这个**共享对象**，apply 是原地改。
+        // 后果（探针 W36/W37 实测）：v139 在 bind 时把 LoadedApk 的 dataDir 改成
+        // guest 官方路径，但只要有任何代码调一次本方法，就会被改回沙箱路径 ->
+        // WebView（走 AppGlobals -> ContextImpl -> LoadedApk）看到的永远是沙箱，
+        // v139 完全失效。
+        //
+        // 返回副本后：
+        //   - 应用代码（走 VirtualContext）仍看到 guest 视角（沙箱路径）
+        //   - framework 内部（走 ContextImpl -> LoadedApk）保留 bind 时注入的值
+        //     （v139 的 guest 官方 dataDir），WebView 也因此能看到"不对齐"的 dataDir
+        val info = ApplicationInfo(super.getApplicationInfo())
+        info.packageName = guestPackageName
+        info.dataDir = appDir.absolutePath
+        info.nativeLibraryDir = sandboxManager.getLibDir(instanceId).absolutePath
+        // Set sourceDir/publicSourceDir to the guest APK so that ReLinker,
+        // GMS, and other libraries that read sourceDir to find native libs
+        // or resources in the APK can locate the correct file.
+        val guestApkPath = sandboxManager.getApkPath(instanceId)
+        if (guestApkPath != null) {
+            info.sourceDir = guestApkPath
+            info.publicSourceDir = guestApkPath
+        }
 
-            // Inject guest APK's meta-data so SDKs (GMS, Firebase, AppLovin)
-            // can read their <meta-data> tags. Without this, GMS throws
-            // GooglePlayServicesMissingManifestValueException.
-            // Use cached bundle to avoid re-parsing the APK on every call.
-            val cached = cachedGuestMetaData
-            if (cached != null) {
-                metaData = cached
-            } else if (guestApkPath != null) {
-                try {
-                    val pm = baseContext.packageManager
-                    val pkgInfo = pm.getPackageArchiveInfo(
-                        guestApkPath,
-                        android.content.pm.PackageManager.GET_META_DATA
-                    )
-                    pkgInfo?.applicationInfo?.let { guestInfo ->
-                        guestInfo.sourceDir = guestApkPath
-                        guestInfo.publicSourceDir = guestApkPath
-                    }
-                    val guestMeta = pkgInfo?.applicationInfo?.metaData ?: android.os.Bundle()
-                    // Ensure GMS version is always present
-                    if (!guestMeta.containsKey("com.google.android.gms.version")) {
-                        guestMeta.putInt("com.google.android.gms.version", 243431006)
-                    }
-                    cachedGuestMetaData = guestMeta
-                    metaData = guestMeta
-                } catch (_: Exception) {
-                    val fallback = android.os.Bundle().apply {
-                        putInt("com.google.android.gms.version", 243431006)
-                    }
-                    cachedGuestMetaData = fallback
-                    metaData = fallback
+        // Inject guest APK's meta-data so SDKs (GMS, Firebase, AppLovin)
+        // can read their <meta-data> tags. Without this, GMS throws
+        // GooglePlayServicesMissingManifestValueException.
+        // Use cached bundle to avoid re-parsing the APK on every call.
+        val cached = cachedGuestMetaData
+        if (cached != null) {
+            info.metaData = cached
+        } else if (guestApkPath != null) {
+            try {
+                val pm = baseContext.packageManager
+                val pkgInfo = pm.getPackageArchiveInfo(
+                    guestApkPath,
+                    android.content.pm.PackageManager.GET_META_DATA
+                )
+                pkgInfo?.applicationInfo?.let { guestInfo ->
+                    guestInfo.sourceDir = guestApkPath
+                    guestInfo.publicSourceDir = guestApkPath
                 }
-            }
-
-            // v135 path fidelity: report stock-install paths instead of
-            // sandbox paths. I/O on these is redirected by v135-pathfidelity.
-            if (pathFidelity) {
-                dataDir = VirtualConstants.syntheticDataDir(guestPackageName)
-                nativeLibraryDir = VirtualConstants.syntheticLibDir(guestPackageName)
-                val synthApk = VirtualConstants.syntheticApkPath(guestPackageName)
-                sourceDir = synthApk
-                publicSourceDir = synthApk
+                val guestMeta = pkgInfo?.applicationInfo?.metaData ?: android.os.Bundle()
+                // Ensure GMS version is always present
+                if (!guestMeta.containsKey("com.google.android.gms.version")) {
+                    guestMeta.putInt("com.google.android.gms.version", 243431006)
+                }
+                cachedGuestMetaData = guestMeta
+                info.metaData = guestMeta
+            } catch (_: Exception) {
+                val fallback = android.os.Bundle().apply {
+                    putInt("com.google.android.gms.version", 243431006)
+                }
+                cachedGuestMetaData = fallback
+                info.metaData = fallback
             }
         }
+
+        // v135 path fidelity: report stock-install paths instead of
+        // sandbox paths. I/O on these is redirected by v135-pathfidelity.
+        if (pathFidelity) {
+            info.dataDir = VirtualConstants.syntheticDataDir(guestPackageName)
+            info.nativeLibraryDir = VirtualConstants.syntheticLibDir(guestPackageName)
+            val synthApk = VirtualConstants.syntheticApkPath(guestPackageName)
+            info.sourceDir = synthApk
+            info.publicSourceDir = synthApk
+        }
+        return info
     }
 
     override fun getPackageManager(): PackageManager {
