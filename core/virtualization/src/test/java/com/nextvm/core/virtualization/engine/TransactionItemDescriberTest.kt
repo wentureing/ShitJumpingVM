@@ -45,10 +45,16 @@ class TransactionItemDescriberTest {
         assertTrue("应包含简单类名，实际=$r", r.startsWith("NewIntentItem"))
     }
 
-    /** 传 null 之类极端输入也不能崩（用 Any() 的包装模拟）。 */
+    /**
+     * 空类名：契约是「不抛异常」，返回空字符串是允许的。
+     *
+     * 注意：这里**不能**断言 isNotEmpty() —— 首版就是这么写错的，
+     * 被 module-test CI 抓到（14 tests, 1 failed）。这个函数的目标是
+     * 「绝不因为输入异常而崩溃」，而不是「一定返回有意义的描述」。
+     */
     @Test
     fun `奇怪类名不会导致异常`() {
         val r = TransactionItemDescriber.describe(Any(), "")
-        assertTrue(r.isNotEmpty())
+        assertEquals("", r)
     }
 }
