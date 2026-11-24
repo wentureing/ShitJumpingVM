@@ -1,4 +1,4 @@
-package com.nextvm.core.virtualization.engine
+package com.nextvm.core.virtualization.engine.activitythread
 
 import android.content.Intent
 import android.os.Message

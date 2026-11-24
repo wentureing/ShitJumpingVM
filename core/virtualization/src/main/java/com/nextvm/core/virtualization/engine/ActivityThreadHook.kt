@@ -10,6 +10,12 @@ import android.os.IBinder
 import android.os.Message
 import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.findField
+import com.nextvm.core.virtualization.engine.activitythread.MainLooperGuard
+import com.nextvm.core.virtualization.engine.activitythread.ProcessKillGuard
+import com.nextvm.core.virtualization.engine.activitythread.TransactionDiagnostics
+import com.nextvm.core.virtualization.engine.activitythread.handleCreateService
+import com.nextvm.core.virtualization.engine.activitythread.handleLegacyLaunchActivity
+import com.nextvm.core.virtualization.engine.activitythread.handleReceiver
 import com.nextvm.core.common.runSafe
 import com.nextvm.core.model.VirtualIntentExtras
 import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
