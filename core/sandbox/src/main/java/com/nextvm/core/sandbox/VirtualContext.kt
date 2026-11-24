@@ -267,14 +267,11 @@ class VirtualContext(
         // 原地改 dataDir，注入值会被覆盖（探针 W36/W37 实测过）。
         val base = super.getApplicationInfo()
         val detached = detachedAppInfoEnabled()
-        // v145：把决策结果写进 debug-trace —— 「假 dataDir 到底有没有生效」一眼可见。
-        // getApplicationInfo 是高频率调用，所以前 3 次用 event（默认可见），之后降级为 detail。
-        val seq = appInfoLogSeq.getAndIncrement()
-        val msg = "detached=$detached baseDataDir=${base.dataDir} pkg=$guestPackageName"
-        if (seq < 3) {
-            com.nextvm.core.common.DebugTrace.event("appInfo", "#$seq $msg")
-        } else {
-            com.nextvm.core.common.DebugTrace.detail("appInfo", "#$seq $msg")
+        // v150：把决策结果写进 debug-trace。getApplicationInfo 是高频调用（Via 启动期几百次），
+        // **只在结果变化时**记录，否则会把其他 detail 淹没。
+        val snapshot = "detached=$detached baseDataDir=${base.dataDir} pkg=$guestPackageName"
+        if (lastAppInfoLog.getAndSet(snapshot) != snapshot) {
+            com.nextvm.core.common.DebugTrace.event("appInfo", snapshot)
         }
         val target = if (detached) ApplicationInfo(base) else base
         return target.apply {
