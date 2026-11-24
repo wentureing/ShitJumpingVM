@@ -60,11 +60,27 @@ class VirtualResourceManager @Inject constructor() {
         private const val SYSTEM_FRAMEWORK_APK = "/system/framework/framework-res.apk"
 
         /** WebView APK path possibilities */
+        // WebView 的资源可能分布在多个 APK 里（Android 10+ 的 Trichrome 架构）：
+        //   - WebViewGoogle64.apk / WebViewGoogle.apk   -> 壳（几 MB）
+        //   - TrichromeLibrary64.apk                    -> 真正的 Chromium 代码 + 资源（100+ MB）
+        // 设备实测（vivo A15）：/product/app/WebViewGoogle64/WebViewGoogle64.apk
+        //                       /product/app/TrichromeLibrary64/TrichromeLibrary64.apk (145 MB)
+        // 只加壳不加 Trichrome 时，WebView 的 onCreateActionMode 读资源会抛
+        // Resources$NotFoundException（实测 Resource ID #0x20c0006 -> Chromium crash）。
         private val WEBVIEW_APK_PATHS = listOf(
+            // Trichrome（优先：资源主要在这里）
+            "/product/app/TrichromeLibrary64/TrichromeLibrary64.apk",
+            "/product/app/TrichromeLibrary/TrichromeLibrary.apk",
+            "/system/app/TrichromeLibrary64/TrichromeLibrary64.apk",
+            "/system/app/TrichromeLibrary/TrichromeLibrary.apk",
+            // 传统 WebView（含 64 后缀）
+            "/product/app/WebViewGoogle64/WebViewGoogle64.apk",
+            "/product/app/WebViewGoogle/WebViewGoogle.apk",
+            "/system/app/WebViewGoogle64/WebViewGoogle64.apk",
             "/system/app/WebViewGoogle/WebViewGoogle.apk",
             "/system/app/GoogleWebView/GoogleWebView.apk",
-            "/product/app/WebViewGoogle/WebViewGoogle.apk",
-            "/system/app/webview/webview.apk"
+            "/system/app/webview/webview.apk",
+            "/system/app/webview64/webview64.apk"
         )
     }
 
@@ -211,6 +227,14 @@ class VirtualResourceManager @Inject constructor() {
 
             Timber.tag(TAG).i("Resources created for $apkPath (density=${displayMetrics.densityDpi}, " +
                 "locale=${configuration.locales.get(0)}, splits=${splits.size})")
+
+            // WebView 在 guest 里加载时，会用自己的资源 ID 到 Resources.getXxx() 查表。
+            // guest 的 AssetManager 默认只有 guest APK，没有 WebView 的资源 ->
+            // Resources$NotFoundException -> Chromium 在 JNI 层 uncaught exception crash。
+            // 实测：Resource ID #0x20c0006 缺失导致 onCreateActionMode 崩溃（popup 异常）。
+            // 必须在缓存写入之后调用（ensureWebViewResources 依赖 resourceCache[instanceId]）。
+            ensureWebViewResources(instanceId)
+
             return compatibleResources
 
         } catch (e: Exception) {
@@ -916,18 +940,39 @@ class VirtualResourceManager @Inject constructor() {
      * WebView loads resources from its own APK, which may not be in our AssetManager.
      */
     fun ensureWebViewResources(instanceId: String) {
-        val entry = resourceCache[instanceId] ?: return
+        val entry = resourceCache[instanceId] ?: run {
+            Timber.tag(TAG).w("ensureWebViewResources: no cache entry for $instanceId")
+            return
+        }
 
         runSafe(TAG) {
-            val webViewPath = WEBVIEW_APK_PATHS.firstOrNull { File(it).exists() }
-            if (webViewPath != null) {
-                val addAssetPath = findMethod(AssetManager::class.java, "addAssetPath",
-                    arrayOf(String::class.java))
-                if (addAssetPath != null) {
-                    addAssetPath.isAccessible = true
-                    addAssetPath.invoke(entry.assetManager, webViewPath)
-                    Timber.tag(TAG).d("Added WebView resources: $webViewPath")
+            val addAssetPath = findMethod(AssetManager::class.java, "addAssetPath",
+                arrayOf(String::class.java))
+            if (addAssetPath == null) {
+                Timber.tag(TAG).w("ensureWebViewResources: addAssetPath not found")
+                return@runSafe
+            }
+            addAssetPath.isAccessible = true
+
+            // 把**所有存在**的 WebView 相关 APK 都加进去（Trichrome 的资源在 Library 里）
+            var added = 0
+            for (path in WEBVIEW_APK_PATHS) {
+                if (!File(path).exists()) continue
+                try {
+                    val cookie = addAssetPath.invoke(entry.assetManager, path)
+                    added++
+                    Timber.tag(TAG).i("Added WebView resources: $path (cookie=$cookie)")
+                } catch (t: Throwable) {
+                    Timber.tag(TAG).w(t, "addAssetPath failed for $path")
                 }
+            }
+            if (added == 0) {
+                Timber.tag(TAG).w(
+                    "ensureWebViewResources: none of WEBVIEW_APK_PATHS exists " +
+                        "(tried ${WEBVIEW_APK_PATHS.size} paths)"
+                )
+            } else {
+                Timber.tag(TAG).i("ensureWebViewResources: $added APK(s) added for $instanceId")
             }
         }
     }
