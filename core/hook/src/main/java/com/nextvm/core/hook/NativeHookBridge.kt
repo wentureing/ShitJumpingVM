@@ -306,9 +306,24 @@ class NativeHookBridge @Inject constructor() {
         //   debug.nextvm.javaIo=0            -> 完全不装 hook（等价于没有 v141）
         //   debug.nextvm.javaIoTranslate=0   -> 装 hook 但不翻译路径（隔离"hook 本身"的影响）
         //   (都=1，默认)                      -> 装 + 翻译
+        // v147：**默认关闭**。
+        //
+        // 实测结论（2026-11-24）：打开这个 hook 会让 Via 从「主页显示源码但仍可交互」
+        // 退化为「完全不能交互」（用户确认，并用 debug.nextvm.javaIo=0 做了对照）。
+        // 因此默认值改为 false，只保留代码与开关供后续修复后重新启用。
+        //
+        // 已知的语义偏差（就是它破坏 Via 的原因，修复方向也在这里）：
+        //   1. Linux.open 失败时 AOSP 抛 ErrnoException("open", errno)，
+        //      本实现抛 FileNotFoundException —— 所有 catch(ErrnoException) 判断
+        //      ENOENT/EACCES 的调用者（FileChannel / NativeCrypto / 部分 RandomAccessFile）
+        //      会捕获不到，异常直接上抛；
+        //   2. Linux.access 失败时 AOSP 抛 ErrnoException，本实现返回 false ——
+        //      File.canRead()/canWrite() 依赖异常分支的代码行为改变。
+        //
+        // 打开方式（仅用于调试/修复验证）：adb shell setprop debug.nextvm.javaIo 1
         if (nativeHooksAvailable) {
             val install = com.nextvm.core.common.DebugFlags.isOn(
-                com.nextvm.core.common.DebugFlags.JAVA_IO, true
+                com.nextvm.core.common.DebugFlags.JAVA_IO, false
             )
             val translate = com.nextvm.core.common.DebugFlags.isOn(
                 com.nextvm.core.common.DebugFlags.JAVA_IO_TRANSLATE, true

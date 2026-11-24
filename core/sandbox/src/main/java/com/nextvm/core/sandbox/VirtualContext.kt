@@ -208,12 +208,28 @@ class VirtualContext(
             File(appDir, "no_backup").also { it.mkdirs() }
         }
 
-    override fun getDataDir(): File =
-        if (pathFidelity) {
+    override fun getDataDir(): File {
+        // v147：**这是 MIME 问题的关键点**。
+        //
+        // WebView 判断一个 file:// 是否"落在自己的数据目录内"，用的是
+        // context.getDataDir()（不是 getApplicationInfo().dataDir —— v146 已证明改那个无效）。
+        // 实测证据：沙箱里存在 <instance>/app_webview_<pkg>/，说明 WebView 确实用
+        // VirtualContext 的目录方法拿数据目录；此前 getDataDir() 始终返回沙箱 appDir，
+        // 而待加载的 html 也在 appDir/files 下 -> 「文件在 dataDir 内」-> 走特殊分支 -> text/plain。
+        val dir = if (pathFidelity || detachedAppInfoEnabled()) {
             File(VirtualConstants.syntheticDataDir(guestPackageName))
         } else {
             appDir
         }
+        val seq = dataDirLogSeq.getAndIncrement()
+        val msg = "getDataDir -> ${dir.absolutePath}"
+        if (seq < 4) {
+            com.nextvm.core.common.DebugTrace.event("ctx", "#$seq $msg")
+        } else {
+            com.nextvm.core.common.DebugTrace.detail("ctx", "#$seq $msg")
+        }
+        return dir
+    }
 
     // === SharedPreferences override ===
 
@@ -336,8 +352,14 @@ class VirtualContext(
      * 仅当同时满足：`nextvm.webviewDataDirFake` 打开，且是该开关的白名单 guest
      * （先只 `com.sandbox.probe`）。非白名单走原逻辑，影响面严格限制。
      */
-    /** v145：getApplicationInfo 的诊断计数（前几次用 event 保证默认可见） */
-    private val appInfoLogSeq = java.util.concurrent.atomic.AtomicInteger()
+    /** v145：getApplicationInfo 诊断（只在结果变化时记录，避免刷屏） */
+    private val lastAppInfoLog = java.util.concurrent.atomic.AtomicReference("")
+
+    /** v146：getExternalFilesDir 的诊断计数 */
+    private val extDirLogSeq = java.util.concurrent.atomic.AtomicInteger()
+
+    /** v147：getDataDir 的诊断计数 */
+    private val dataDirLogSeq = java.util.concurrent.atomic.AtomicInteger()
 
     private fun detachedAppInfoEnabled(): Boolean =
         com.nextvm.core.common.DebugFlags.isOn(
