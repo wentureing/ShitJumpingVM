@@ -152,6 +152,27 @@ object VirtualConstants {
     fun isPathFidelityGuest(packageName: String): Boolean =
         packageName == CM_PACKAGE
 
+    // ============ v137 WebView file 代读 ============
+    /**
+     * 是否给 guest 的 WebView 装「file:// 代读 + 补 MIME」的那层 client
+     * （实现见 core:virtualization 的 WebViewFileDelegate）。
+     *
+     * 默认开。关闭方式：容器在 **fork guest 之前** 调
+     * `System.setProperty("nextvm.webviewFileDelegate", "0")` ——
+     * fork 出的 guest 进程会继承这个属性（JVM 内存是复制的）。
+     * 目前还没有接线（CmdReceiver 的 SETTINGS 通道还没做这条），
+     * 但保留了关闭能力：将来导入会做反注入检测的应用时按包名关掉。
+     *
+     * 为什么需要能关：包装 client 会让 `WebView.getWebViewClient()`
+     * 返回我们的 wrapper。Via 这类浏览器不会去断言 client 身份，但金融/政务类
+     * 应用可能会。
+     */
+    fun webviewFileDelegateEnabled(): Boolean = try {
+        System.getProperty("nextvm.webviewFileDelegate", "1") != "0"
+    } catch (t: Throwable) {
+        true
+    }
+
     /** Real stock data dir for the guest package (deterministic). */
     fun syntheticDataDir(packageName: String): String =
         "/data/user/0/$packageName"

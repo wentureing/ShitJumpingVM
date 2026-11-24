@@ -778,6 +778,10 @@ class VirtualApplicationManager @Inject constructor(
                         wrapFaceVerifyButton(a)
                         probeAuthIntentPhone(a)
                         probeAuthIntentPhone145(a)
+                        // v137: guest 的 WebView 需要 file:// 代读 + 正确 MIME
+                        // （容器内不这么做的话，.html 会被当 text/plain 显示源码，
+                        //  Via 主页就是这个现象）。只在视图树里找 WebView，找到就包一层。
+                        WebViewFileDelegate.scan(a.window?.decorView)
                     }
 
                     override fun onActivityPaused(a: android.app.Activity) =
@@ -820,6 +824,11 @@ class VirtualApplicationManager @Inject constructor(
                                 probeAuthIntentPhone(it)
                                 probeAuthIntentPhone145(it)
                                 dumpV148ConnectProbe()
+                                // v137: 应用若在 resume 之后又 setWebViewClient，
+                                // 我们的包装会被顶掉；这里每 5s 复查并补回。
+                                // 注意本 timer 只跑 120 次（10 分钟），之后不再复查 ——
+                                // 窗口期内仍然是「现状行为」（.html 当源码），不会更坏。
+                                WebViewFileDelegate.scan(it.window?.decorView)
                             }
                         } catch (_: Throwable) {
                         }
