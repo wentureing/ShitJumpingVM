@@ -100,9 +100,9 @@ object DebugFlags {
 
     /** 供诊断输出：当前所有已知开关的取值（每项用自己的真实默认值，避免误报）。 */
     fun snapshot(): String = listOf(
-        JAVA_IO to true,
+        JAVA_IO to false,
         JAVA_IO_TRANSLATE to true,
-        VERBOSE to false,
+        VERBOSE to true,
         GUEST_REDIRECT to true,
         WEBVIEW_DATA_DIR_FAKE to true
     ).joinToString(", ") { (n, d) -> n + "=" + isOn(n, d) }

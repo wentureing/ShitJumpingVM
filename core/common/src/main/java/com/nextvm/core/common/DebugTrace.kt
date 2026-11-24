@@ -68,9 +68,9 @@ object DebugTrace {
         emit(android.util.Log.INFO, "Dbg/$tag", message, null)
     }
 
-    /** 高频细节（仅 verbose）。 */
+    /** 高频细节（v148 起**默认开启** —— 用户要求 debug 包输出全部）。 */
     fun detail(tag: String, message: String) {
-        if (!DebugFlags.isOn(DebugFlags.VERBOSE, false)) return
+        if (!DebugFlags.isOn(DebugFlags.VERBOSE, true)) return
         emit(android.util.Log.DEBUG, "Dbg/$tag", message, null)
     }
 

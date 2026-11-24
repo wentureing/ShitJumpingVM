@@ -545,6 +545,12 @@ class VirtualApplicationManager @Inject constructor(
                         "javaIo",
                         "stats after bind: " + (nativeHookBridge.javaIoStats() ?: "n/a")
                     )
+                    // v148：最近「失败 / 发生翻译」的 open|access 明细
+                    com.nextvm.core.common.DebugTrace.event(
+                        "javaIo",
+                        "recent opens after bind:\n" +
+                            (nativeHookBridge.recentOpens() ?: "n/a")
+                    )
                     scheduleGuestStackDumps(packageName)
                     scheduleHijackTrace(packageName)
                     DexMemDump.schedule(packageName, fwApp.filesDir)

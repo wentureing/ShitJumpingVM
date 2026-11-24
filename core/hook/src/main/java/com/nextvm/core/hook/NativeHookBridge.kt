@@ -977,6 +977,27 @@ class NativeHookBridge @Inject constructor() {
     /** v146：重置 Java 层 open 统计。 */
     private external fun nativeResetJavaIoStats()
 
+    /** v148：最近 N 条「失败 / 发生翻译」的 open|access 记录（多行文本）。 */
+    private external fun nativeGetRecentOpens(): String?
+
+    /** v148：清空最近记录。 */
+    private external fun nativeClearRecentOpens()
+
+    /** 供诊断输出：最近的 open/access 异常与翻译记录。 */
+    fun recentOpens(): String? = try {
+        nativeGetRecentOpens()
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** 清空最近记录（guest 启动时调用，便于按次观察）。 */
+    fun clearRecentOpens() {
+        try {
+            nativeClearRecentOpens()
+        } catch (_: Throwable) {
+        }
+    }
+
     /** 供诊断输出：Java 层 I/O 统计。 */
     fun javaIoStats(): String? = try {
         nativeGetJavaIoStats()

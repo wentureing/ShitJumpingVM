@@ -6443,23 +6443,137 @@ static std::atomic<int> g_java_io_open_total{0};
 static std::atomic<int> g_java_io_open_fail{0};
 static std::atomic<int> g_java_io_translated{0};
 
-/** 构造 java.io.FileDescriptor 并 setInt$(fd) */
-static jobject java_io_make_fd(JNIEnv* env, int fd) {
-    jclass cls = env->FindClass("java/io/FileDescriptor");
-    if (cls == nullptr) return nullptr;
-    jmethodID ctor = env->GetMethodID(cls, "<init>", "()V");
-    jmethodID set_int = env->GetMethodID(cls, "setInt$", "(I)V");
-    jobject obj = nullptr;
-    if (ctor != nullptr && set_int != nullptr) {
-        obj = env->NewObject(cls, ctor);
-        if (obj != nullptr) env->CallVoidMethod(obj, set_int, fd);
+// ==================== v148：与 AOSP 语义等价所需的缓存引用 ====================
+// 旧实现每次 open 都 FindClass + GetMethodID，且失败时抛 FileNotFoundException
+// （AOSP 抛 ErrnoException）—— 这会让 catch(ErrnoException) 的调用者走错分支，
+// 实测导致 Via 完全不可交互。这里改为：引用缓存 + 异常类型对齐 + EINTR 重试。
+static jclass g_fd_class = nullptr;
+static jmethodID g_fd_ctor = nullptr;
+static jmethodID g_fd_set_int = nullptr;
+static jclass g_errno_class = nullptr;
+static jmethodID g_errno_ctor = nullptr;
+static jclass g_nfe_class = nullptr;
+static jmethodID g_nfe_ctor = nullptr;
+static std::atomic<bool> g_java_io_refs_ready{false};
+
+/** 解析并缓存 FileDescriptor / ErrnoException 的构造器（只做一次）。 */
+static bool java_io_refs(JNIEnv* env) {
+    if (g_java_io_refs_ready.load()) return true;
+
+    if (g_fd_class == nullptr) {
+        jclass local = env->FindClass("java/io/FileDescriptor");
+        if (local != nullptr) {
+            g_fd_class = static_cast<jclass>(env->NewGlobalRef(local));
+            env->DeleteLocalRef(local);
+            if (g_fd_class != nullptr) {
+                g_fd_ctor = env->GetMethodID(g_fd_class, "<init>", "()V");
+                g_fd_set_int = env->GetMethodID(g_fd_class, "setInt$", "(I)V");
+            }
+        } else if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
     }
-    env->DeleteLocalRef(cls);
+
+    if (g_errno_class == nullptr) {
+        jclass local = env->FindClass("libcore/io/ErrnoException");
+        if (local != nullptr) {
+            g_errno_class = static_cast<jclass>(env->NewGlobalRef(local));
+            env->DeleteLocalRef(local);
+            if (g_errno_class != nullptr) {
+                // ErrnoException(String functionName, int errno)
+                g_errno_ctor = env->GetMethodID(
+                    g_errno_class, "<init>", "(Ljava/lang/String;I)V");
+            }
+        } else if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+    }
+
+    // 兜底：ErrnoException 拿不到时退回 FileNotFoundException，绝不让 hook 变成崩溃源
+    if (g_nfe_class == nullptr) {
+        jclass local = env->FindClass("java/io/FileNotFoundException");
+        if (local != nullptr) {
+            g_nfe_class = static_cast<jclass>(env->NewGlobalRef(local));
+            env->DeleteLocalRef(local);
+            if (g_nfe_class != nullptr) {
+                g_nfe_ctor = env->GetMethodID(g_nfe_class, "<init>", "(Ljava/lang/String;)V");
+            }
+        } else if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+    }
+
+    bool ok = (g_fd_class != nullptr && g_fd_ctor != nullptr && g_fd_set_int != nullptr);
+    if (ok) g_java_io_refs_ready.store(true);
+    return ok;
+}
+
+/** v148：抛 libcore.io.ErrnoException（AOSP 行为）；拿不到则退回 FileNotFoundException。 */
+static void java_io_throw_errno(JNIEnv* env, const char* functionName, int err,
+                                const char* path) {
+    java_io_refs(env);
+    if (g_errno_class != nullptr && g_errno_ctor != nullptr) {
+        jstring name = env->NewStringUTF(functionName);
+        jobject exc = env->NewObject(g_errno_class, g_errno_ctor, name, err);
+        env->DeleteLocalRef(name);
+        if (exc != nullptr) {
+            env->Throw(static_cast<jthrowable>(exc));
+            env->DeleteLocalRef(exc);
+            return;
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    if (g_nfe_class != nullptr && g_nfe_ctor != nullptr) {
+        jstring msg = env->NewStringUTF(path == nullptr ? "" : path);
+        jobject exc = env->NewObject(g_nfe_class, g_nfe_ctor, msg);
+        env->DeleteLocalRef(msg);
+        if (exc != nullptr) {
+            env->Throw(static_cast<jthrowable>(exc));
+            env->DeleteLocalRef(exc);
+            return;
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+}
+
+// ==================== v148：最近 open/access 环形缓冲（调试工具） ====================
+// 只记录「失败」或「发生路径翻译」的调用，避免正常路径刷屏。
+struct JavaIoRecord {
+    char path[192];
+    char op[8];
+    int err;    // 0 = 成功
+    int flags;
+};
+
+static const int JAVA_IO_RECENT_CAP = 32;
+static JavaIoRecord g_java_io_recent[JAVA_IO_RECENT_CAP];
+static std::atomic<int> g_java_io_recent_seq{0};
+static std::mutex g_java_io_recent_mu;
+
+static void java_io_record(const char* op, const char* path, int err, int flags) {
+    std::lock_guard<std::mutex> guard(g_java_io_recent_mu);
+    int seq = g_java_io_recent_seq.fetch_add(1);
+    JavaIoRecord& r = g_java_io_recent[seq % JAVA_IO_RECENT_CAP];
+    snprintf(r.path, sizeof(r.path), "%s", path == nullptr ? "" : path);
+    snprintf(r.op, sizeof(r.op), "%s", op == nullptr ? "?" : op);
+    r.err = err;
+    r.flags = flags;
+}
+
+/** 构造 FileDescriptor（用缓存的 jmethodID） */
+static jobject java_io_make_fd(JNIEnv* env, int fd) {
+    if (!java_io_refs(env)) return nullptr;
+    jobject obj = env->NewObject(g_fd_class, g_fd_ctor);
+    if (obj != nullptr) {
+        env->CallVoidMethod(obj, g_fd_set_int, fd);
+    }
     return obj;
 }
 
-/** 把 jstring 路径解析成真实路径（translate 开关 + redirect_path 前缀匹配） */
-static void java_io_resolve(JNIEnv* env, jstring path, std::string* out) {
+/** 把 jstring 路径解析成真实路径；*translated 标记是否命中规则 */
+static void java_io_resolve(JNIEnv* env, jstring path, std::string* out,
+                            bool* translated) {
+    *translated = false;
     const char* raw = env->GetStringUTFChars(path, nullptr);
     if (raw == nullptr) {
         out->clear();
@@ -6470,6 +6584,7 @@ static void java_io_resolve(JNIEnv* env, jstring path, std::string* out) {
         if (!redirected.empty()) {
             g_java_io_translated.fetch_add(1);
             *out = redirected;
+            *translated = true;
         } else {
             *out = raw;
         }
@@ -6483,27 +6598,34 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
                                       jint flags, jint mode) {
     if (path == nullptr) return nullptr;
     std::string real;
-    java_io_resolve(env, path, &real);
+    bool translated = false;
+    java_io_resolve(env, path, &real, &translated);
     if (real.empty()) return nullptr;
 
     int n = ++g_java_io_open_logs;
     g_java_io_open_total.fetch_add(1);
-    if (n <= 300) {
+    if (n <= 200) {
         LOGI("JavaIo open%s: %s (flags=0x%x)",
-             g_java_io_translate.load() ? "" : "[nofix]",
-             real.c_str(), static_cast<unsigned>(flags));
+             translated ? " [xlat]" : "", real.c_str(),
+             static_cast<unsigned>(flags));
     }
 
-    // 直接调真实 libc（本 .so 属于「容器自身库」，永不被 GOT patch，所以这里是真 open）
-    int fd = ::open(real.c_str(), flags, mode);
-    if (fd < 0) {
+    // v148：与 AOSP 一致 —— EINTR 重试
+    int fd;
+    do {
+        fd = ::open(real.c_str(), flags, mode);
+    } while (fd == -1 && errno == EINTR);
+
+    if (fd == -1) {
+        int err = errno;
         g_java_io_open_fail.fetch_add(1);
-        jclass nfe = env->FindClass("java/io/FileNotFoundException");
-        if (nfe != nullptr) {
-            env->ThrowNew(nfe, real.c_str());
-            env->DeleteLocalRef(nfe);
-        }
+        java_io_record("open", real.c_str(), err, flags);
+        // v148：抛 ErrnoException（AOSP 行为），而不是 FileNotFoundException
+        java_io_throw_errno(env, "open", err, real.c_str());
         return nullptr;
+    }
+    if (translated) {
+        java_io_record("open", real.c_str(), 0, flags);
     }
     return java_io_make_fd(env, fd);
 }
@@ -6511,9 +6633,25 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
 static jboolean hooked_java_linux_access(JNIEnv* env, jclass, jstring path, jint mode) {
     if (path == nullptr) return JNI_FALSE;
     std::string real;
-    java_io_resolve(env, path, &real);
+    bool translated = false;
+    java_io_resolve(env, path, &real, &translated);
     if (real.empty()) return JNI_FALSE;
-    return (::access(real.c_str(), mode) == 0) ? JNI_TRUE : JNI_FALSE;
+
+    int rc;
+    do {
+        rc = ::access(real.c_str(), mode);
+    } while (rc == -1 && errno == EINTR);
+
+    if (rc == -1) {
+        int err = errno;
+        if (translated) {
+            java_io_record("access", real.c_str(), err, mode);
+        }
+        // v148：AOSP 的 Linux.access 失败时抛 ErrnoException（不是返回 false）
+        java_io_throw_errno(env, "access", err, real.c_str());
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
 }
 
 static bool install_java_io_hooks(JNIEnv* env, bool translate) {
@@ -6591,6 +6729,48 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeResetJavaIoStats(
     g_java_io_open_total.store(0);
     g_java_io_open_fail.store(0);
     g_java_io_translated.store(0);
+}
+
+/**
+ * v148：取出最近 N 条「失败 / 发生翻译」的 open|access 记录。
+ *
+ * 为什么需要：guest 的 native 日志被设备吞掉，而"哪个路径打不开、errno 是多少"
+ * 是排查 Java 层 I/O 问题的第一手线索。Kotlin 侧把它写进 debug-trace.log。
+ *
+ * 返回多行文本："#seq op err=<errno|0> flags=0x.. path"
+ */
+JNIEXPORT jstring JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeGetRecentOpens(
+    JNIEnv* env, jobject thiz)
+{
+    (void)thiz;
+    std::lock_guard<std::mutex> guard(g_java_io_recent_mu);
+    int seq = g_java_io_recent_seq.load();
+    int count = seq < JAVA_IO_RECENT_CAP ? seq : JAVA_IO_RECENT_CAP;
+    std::string out;
+    for (int i = seq - count; i < seq; ++i) {
+        const JavaIoRecord& r = g_java_io_recent[i % JAVA_IO_RECENT_CAP];
+        char line[288];
+        snprintf(line, sizeof(line), "#%d %s err=%d flags=0x%x %s\n",
+                 i, r.op, r.err, static_cast<unsigned>(r.flags), r.path);
+        out += line;
+    }
+    if (out.empty()) out = "(empty)";
+    return env->NewStringUTF(out.c_str());
+}
+
+/**
+ * v148：清空最近的 open/access 记录（便于按次观察）
+ */
+JNIEXPORT void JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeClearRecentOpens(
+    JNIEnv* env, jobject thiz)
+{
+    (void)env;
+    (void)thiz;
+    std::lock_guard<std::mutex> guard(g_java_io_recent_mu);
+    g_java_io_recent_seq.store(0);
+    memset(g_java_io_recent, 0, sizeof(g_java_io_recent));
 }
 
 } // extern "C"
