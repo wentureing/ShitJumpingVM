@@ -228,12 +228,25 @@ class VirtualResourceManager @Inject constructor() {
             Timber.tag(TAG).i("Resources created for $apkPath (density=${displayMetrics.densityDpi}, " +
                 "locale=${configuration.locales.get(0)}, splits=${splits.size})")
 
-            // WebView 在 guest 里加载时，会用自己的资源 ID 到 Resources.getXxx() 查表。
-            // guest 的 AssetManager 默认只有 guest APK，没有 WebView 的资源 ->
-            // Resources$NotFoundException -> Chromium 在 JNI 层 uncaught exception crash。
-            // 实测：Resource ID #0x20c0006 缺失导致 onCreateActionMode 崩溃（popup 异常）。
-            // 必须在缓存写入之后调用（ensureWebViewResources 依赖 resourceCache[instanceId]）。
-            ensureWebViewResources(instanceId)
+            // ⚠️ 不要在这里调 ensureWebViewResources()（2026-11-24 回退）
+            //
+            // 事后往**已经建好**的 AssetManager 里 addAssetPath 会让 TypedValue.assetCookie 失效：
+            //   Caused by: UnsupportedOperationException: Failed to resolve attribute at index 5:
+            //              TypedValue{t=0x2/d=0x7f040027 a=-1}
+            //     at TypedArray.getColorStateList
+            //     at TextView.readTextAppearance / TextView.<init>
+            //   -> InflateException: Binary XML file line #48 in mark.via:layout/p
+            //   -> FATAL EXCEPTION: main，进程每 0.5s 重启一次（boot loop）
+            //
+            // 根因：API 30+ 的 AssetManager 是用 AssetManager.Builder.addApkAssets() 建的，
+            //      资源表在 build() 时就固化了；之后 addAssetPath 会重建资源表，
+            //      而已经创建的 ResourcesImpl 还持有旧 cookie -> a=-1。
+            //
+            // 正确做法：在 createAssetManagerViaBuilder / ViaApkAssets / Legacy 内部，
+            //          **build()/setApkAssets() 之前**把 WebView 的 ApkAssets 一起加进去。
+            //          且 WebView 是 shared library（Trichrome），要用 shared-library 方式加载，
+            //          不能直接 addAssetPath 到 guest 的 0x7f 资源域。
+            // 详见 docs/records/记录-WebView资源注入导致Via启动循环.md
 
             return compatibleResources
 
