@@ -290,7 +290,7 @@ class NativeHookBridge @Inject constructor() {
         // 只会发生在 guest 进程；translate=false 时只打日志不改路径（空转验证）。
         if (nativeHooksAvailable) {
             val translate = try {
-                System.getProperty("nextvm.javaIoRedirect", "0") != "0"
+                System.getProperty("nextvm.javaIoRedirect", "1") != "0"
             } catch (_: Throwable) {
                 false
             }
