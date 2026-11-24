@@ -6,6 +6,7 @@ import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.DebugTrace
 import com.nextvm.core.common.findField
 import com.nextvm.core.model.VirtualIntentExtras
+import com.nextvm.core.virtualization.engine.ActivityThreadHook
 import timber.log.Timber
 
 /**
