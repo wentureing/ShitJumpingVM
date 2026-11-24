@@ -213,7 +213,16 @@ class NativeHookBridge @Inject constructor() {
         //
         // guest 进程（:p0-:p9）仍会装 hook：由 getOrCreateClassLoader 调用本方法。
         // NativeHookBridge 是 @Singleton（Hilt），每个进程一份，initialized 是进程级。
-        val procName = android.app.Application.getProcessName()
+        // 取进程名：Application.getProcessName() 是 API 28，minSdk 是 26，
+        // 所以用反射调 ActivityThread.currentProcessName()（全版本可用），
+        // 再退到 /proc/self/cmdline（主进程此时还没有 hook，读到的是真实值）。
+        val procName = runCatching {
+            Class.forName("android.app.ActivityThread")
+                .getMethod("currentProcessName")
+                .invoke(null) as? String
+        }.getOrNull() ?: runCatching {
+            java.io.File(PROC_SELF_CMDLINE).readText().trimEnd('\u0000')
+        }.getOrNull()
         val hostPkg = context?.packageName
         if (hostPkg != null && procName == hostPkg) {
             initialized = true
