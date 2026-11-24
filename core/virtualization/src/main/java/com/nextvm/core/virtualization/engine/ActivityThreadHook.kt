@@ -46,7 +46,7 @@ import timber.log.Timber
 class ActivityThreadHook(
     private val context: Context,
     private val stubRegistry: StubRegistry,
-    private val engine: VirtualEngine
+    internal val engine: VirtualEngine
 ) {
     /** The host app's package name, used for LoadedApk injection */
     internal val hostPackageName: String = context.packageName
@@ -71,6 +71,9 @@ class ActivityThreadHook(
     }
 
     private var originalCallback: Handler.Callback? = null
+
+    /** v150：事务投递观测（拆出的独立职责，纯观测、永不抛） */
+    private val diagnostics = TransactionDiagnostics(context)
     private var installed = false
 
     /**
@@ -145,79 +148,8 @@ class ActivityThreadHook(
     }
 
     private fun installMainLooperCrashGuard() {
-        try {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                while (true) {
-                    try {
-                        android.os.Looper.loop()
-                    } catch (e: Throwable) {
-                        // Walk the cause chain to find the root exception
-                        var root: Throwable = e
-                        while (root.cause != null) root = root.cause!!
-
-                        // Only consume the narrowly identified system-identity failures
-                        // caused by virtualized GMS calls. Guest resource failures must
-                        // remain fatal so missing resource injection is observable;
-                        // compatibility belongs in the guest Resources instance.
-                        // v115: scan the whole cause chain for both
-                        // signals instead of only checking the chain
-                        // tail. launch141 proved the tail-only check
-                        // misses this exact failure: the chain is
-                        // RuntimeException("Adding window failed") ->
-                        // SecurityException("... not in UID ...") ->
-                        // RemoteException, so the old `root is
-                        // SecurityException` test was false even
-                        // though the guard ran (its lambda is in the
-                        // crash stack) and the mismatch was the real
-                        // cause. The walk must not break early: the
-                        // top frame already carries Toast frames while
-                        // the SecurityException sits one link down.
-                        var isToastWindowFailure = false
-                        var uidMismatchSecurity: SecurityException? = null
-                        var cursor: Throwable? = e
-                        while (cursor != null) {
-                            if (cursor.message?.contains("Adding window failed") == true ||
-                                cursor.stackTrace.any {
-                                    it.className == "android.widget.ToastPresenter" ||
-                                        it.className.startsWith("android.widget.Toast")
-                                }) {
-                                isToastWindowFailure = true
-                            }
-                            if (cursor is SecurityException &&
-                                cursor.message?.contains("not in UID") == true) {
-                                uidMismatchSecurity = cursor
-                            }
-                            cursor = cursor.cause
-                        }
-
-                        // ToastPresenter validates the operation package against the
-                        // host UID. Consume only this narrow mismatch; other Toast
-                        // and all guest exceptions must still crash normally.
-                        if (uidMismatchSecurity != null &&
-                            isToastWindowFailure) {
-                            com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
-                                .logThrowable(
-                                    "main-looper guard SUPPRESSED guest Toast UID mismatch", e)
-                            Timber.tag(TAG).w(e, "Suppressed guest Toast UID mismatch: ${uidMismatchSecurity.message}")
-                        } else if (root is SecurityException &&
-                            (root.message?.contains("Unknown calling package name") == true ||
-                             root.message?.contains("does not belong to") == true)) {
-                            com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
-                                .logThrowable(
-                                    "main-looper guard SUPPRESSED exception (message consumed)", e)
-                            Timber.tag(TAG).w(e, "Suppressed GMS SecurityException in main looper: ${root.message}")
-                            // Continue looping — the crashed message is consumed
-                        } else {
-                            // Re-throw non-GMS exceptions to preserve normal crash behavior
-                            throw e
-                        }
-                    }
-                }
-            }
-            Timber.tag(TAG).i("Main looper crash guard installed")
-        } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "Failed to install main looper crash guard")
-        }
+        // v150：实现已拆到 MainLooperGuard（含「只吞两类异常」的语义说明与偏差登记）
+        MainLooperGuard.install()
     }
 
     /**
@@ -327,59 +259,14 @@ class ActivityThreadHook(
         return false
     }
 
-    private val deliveryTraceLock = Any()
-
-    /** v76: append one delivery-witness line to the shared trace file. */
     private fun traceDelivery(line: String) {
-        try {
-            val f = java.io.File(
-                context.filesDir,
-                "startactivity-trace-" + android.os.Process.myPid() + ".log"
-            )
-            synchronized(deliveryTraceLock) {
-                f.appendText(
-                    "[t=" + System.currentTimeMillis() + "] " +
-                        "athook-delivery: " + line + "\n"
-                )
-            }
-        } catch (_: Throwable) {
-            // witness only; never disturb delivery
-        }
+        // v150：实现已拆到 TransactionDiagnostics（纯观测，永不抛）
+        diagnostics.traceDelivery(line)
     }
 
     /** v76: one-line description of a transaction item for the witness. */
     private fun describeTransactionItem(item: Any, className: String): String {
-        val simple = className.substringAfterLast('.')
-        return try {
-            when {
-                className.contains("LaunchActivityItem") -> {
-                    val intentField = findField(item::class.java, "mIntent")
-                    intentField?.isAccessible = true
-                    val intent = intentField?.get(item) as? Intent
-                    simple + " cmp=" + intent?.component +
-                        " nextvmExtras=" +
-                        (intent?.getStringExtra(
-                            VirtualIntentExtras.TARGET_PACKAGE
-                        ) != null) +
-                        " target=" + intent?.getStringExtra(
-                            VirtualIntentExtras.TARGET_ACTIVITY
-                        )
-                }
-                className.contains("NewIntentItem") -> {
-                    val intentsField = findField(item::class.java, "mIntents")
-                    intentsField?.isAccessible = true
-                    @Suppress("UNCHECKED_CAST")
-                    val intents = intentsField?.get(item) as? List<Intent>
-                    simple + " intents=[" +
-                        (intents?.joinToString(",") {
-                            it.component?.flattenToShortString() ?: "?"
-                        } ?: "?") + "]"
-                }
-                else -> simple
-            }
-        } catch (_: Throwable) {
-            simple + " <describe failed>"
-        }
+        return diagnostics.describeTransactionItem(item, className)
     }
 
     /**
@@ -964,7 +851,7 @@ class ActivityThreadHook(
      *   mPackages: ArrayMap<String, WeakReference<LoadedApk>>
      *   LoadedApk.mClassLoader: ClassLoader
      */
-    private fun replaceClassLoader(packageName: String, instanceId: String, apkPath: String) {
+    internal fun replaceClassLoader(packageName: String, instanceId: String, apkPath: String) {
         runSafe(TAG) {
             GuestBreadcrumb.log("replaceClassLoader enter pkg=$packageName instance=$instanceId")
             val atClass = Class.forName("android.app.ActivityThread")
@@ -1587,197 +1474,6 @@ class ActivityThreadHook(
      * Handle legacy LAUNCH_ACTIVITY (100) for pre-Android 9 devices.
      * (Kept for compatibility, but Android 16 uses EXECUTE_TRANSACTION exclusively)
      */
-    private fun handleLegacyLaunchActivity(msg: Message): Boolean {
-        if (AndroidCompat.isAtLeastP) return false // Not used on Android 9+
-
-        try {
-            val record = msg.obj ?: return false
-            val intentField = findField(record::class.java, "intent")
-            intentField?.isAccessible = true
-            val intent = intentField?.get(record) as? Intent ?: return false
-
-            val targetActivity = intent.getStringExtra(VirtualIntentExtras.TARGET_ACTIVITY)
-                ?: return false
-
-            val activityInfoField = findField(record::class.java, "activityInfo")
-            activityInfoField?.isAccessible = true
-            val activityInfo = activityInfoField?.get(record)
-
-            if (activityInfo != null) {
-                val nameField = findField(activityInfo::class.java, "name")
-                nameField?.isAccessible = true
-                nameField?.set(activityInfo, targetActivity)
-            }
-
-            Timber.tag(TAG).d("Legacy class swap: $targetActivity")
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Error in legacy LAUNCH_ACTIVITY handler")
-        }
-
-        return false
-    }
-
-    /**
-     * Handle CREATE_SERVICE (114) — Service creation interception.
-     *
-     * msg.obj = CreateServiceData with:
-     *   - token: IBinder
-     *   - info: ServiceInfo (contains name, packageName, applicationInfo)
-     *   - compatInfo: CompatibilityInfo
-     *   - intent: Intent (may have our NEXTVM extras)
-     */
-    private fun handleCreateService(msg: Message): Boolean {
-        val data = msg.obj ?: return false
-
-        try {
-            val dataClass = data::class.java
-
-            // Get ServiceInfo from CreateServiceData
-            val infoField = findField(dataClass, "info")
-            infoField?.isAccessible = true
-            val serviceInfo = infoField?.get(data) ?: return false
-
-            // Try to get intent with NEXTVM extras
-            // In some Android versions, CreateServiceData may have an intent
-            val intentField = findField(dataClass, "intent")
-            intentField?.isAccessible = true
-            val intent = intentField?.get(data) as? Intent
-
-            // Check if this service was started by NEXTVM
-            val targetPackage = intent?.getStringExtra(VirtualIntentExtras.TARGET_PACKAGE)
-            val targetService = intent?.getStringExtra("_nextvm_target_service")
-            val instanceId = intent?.getStringExtra(VirtualIntentExtras.INSTANCE_ID)
-            val apkPath = intent?.getStringExtra(VirtualIntentExtras.APK_PATH)
-
-            if (targetPackage != null && targetService != null && instanceId != null && apkPath != null) {
-                Timber.tag(TAG).i("Intercepted stub service → swapping to $targetService ($targetPackage)")
-
-                val siClass = serviceInfo::class.java
-
-                // Swap ServiceInfo.name
-                val nameField2 = findField(siClass, "name")
-                nameField2?.isAccessible = true
-                nameField2?.set(serviceInfo, targetService)
-
-                // Swap ServiceInfo.packageName
-                val pkgField = findField(siClass, "packageName")
-                pkgField?.isAccessible = true
-                pkgField?.set(serviceInfo, targetPackage)
-
-                // Swap applicationInfo
-                val appInfoField = findField(siClass, "applicationInfo")
-                appInfoField?.isAccessible = true
-                val appInfo = appInfoField?.get(serviceInfo)
-                if (appInfo != null) {
-                    val aiPkgField = findField(appInfo::class.java, "packageName")
-                    aiPkgField?.isAccessible = true
-                    aiPkgField?.set(appInfo, targetPackage)
-
-                    val srcDirField = findField(appInfo::class.java, "sourceDir")
-                    srcDirField?.isAccessible = true
-                    srcDirField?.set(appInfo, apkPath)
-
-                    val pubSrcDirField = findField(appInfo::class.java, "publicSourceDir")
-                    pubSrcDirField?.isAccessible = true
-                    pubSrcDirField?.set(appInfo, apkPath)
-
-                    val dataDirStr = engine.getDataDir(instanceId)
-                    if (dataDirStr != null) {
-                        val ddField = findField(appInfo::class.java, "dataDir")
-                        ddField?.isAccessible = true
-                        ddField?.set(appInfo, dataDirStr)
-                    }
-                }
-
-                // Replace ClassLoader for this guest package
-                replaceClassLoader(targetPackage, instanceId, apkPath)
-
-                Timber.tag(TAG).d("Service class swap complete: $targetService (instance: $instanceId)")
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Error in CREATE_SERVICE handler")
-        }
-
-        return false
-    }
-
-    /**
-     * Handle RECEIVER (113) — BroadcastReceiver dispatch interception.
-     *
-     * msg.obj = ReceiverData with:
-     *   - intent: Intent (the broadcast)
-     *   - info: ActivityInfo (receiver info, confusingly named)
-     *   - compatInfo: CompatibilityInfo
-     */
-    private fun handleReceiver(msg: Message): Boolean {
-        val data = msg.obj ?: return false
-
-        try {
-            val dataClass = data::class.java
-
-            // Get the broadcast intent
-            val intentField = findField(dataClass, "intent")
-            intentField?.isAccessible = true
-            val intent = intentField?.get(data) as? Intent ?: return false
-
-            // Check for NEXTVM receiver metadata
-            val targetPackage = intent.getStringExtra(VirtualIntentExtras.TARGET_PACKAGE)
-            val targetReceiver = intent.getStringExtra("_nextvm_target_receiver")
-            val instanceId = intent.getStringExtra(VirtualIntentExtras.INSTANCE_ID)
-            val apkPath = intent.getStringExtra(VirtualIntentExtras.APK_PATH)
-
-            if (targetPackage != null && targetReceiver != null && instanceId != null && apkPath != null) {
-                Timber.tag(TAG).i("Intercepted stub receiver → swapping to $targetReceiver ($targetPackage)")
-
-                // Get receiver info (stored as ActivityInfo in ReceiverData)
-                val infoField = findField(dataClass, "info")
-                infoField?.isAccessible = true
-                val receiverInfo = infoField?.get(data)
-
-                if (receiverInfo != null) {
-                    val riClass = receiverInfo::class.java
-
-                    // Swap name
-                    val nameField2 = findField(riClass, "name")
-                    nameField2?.isAccessible = true
-                    nameField2?.set(receiverInfo, targetReceiver)
-
-                    // Swap packageName
-                    val pkgField = findField(riClass, "packageName")
-                    pkgField?.isAccessible = true
-                    pkgField?.set(receiverInfo, targetPackage)
-
-                    // Swap applicationInfo
-                    val appInfoField = findField(riClass, "applicationInfo")
-                    appInfoField?.isAccessible = true
-                    val appInfo = appInfoField?.get(receiverInfo)
-                    if (appInfo != null) {
-                        val aiPkgField = findField(appInfo::class.java, "packageName")
-                        aiPkgField?.isAccessible = true
-                        aiPkgField?.set(appInfo, targetPackage)
-
-                        val srcDirField = findField(appInfo::class.java, "sourceDir")
-                        srcDirField?.isAccessible = true
-                        srcDirField?.set(appInfo, apkPath)
-
-                        val pubSrcDirField = findField(appInfo::class.java, "publicSourceDir")
-                        pubSrcDirField?.isAccessible = true
-                        pubSrcDirField?.set(appInfo, apkPath)
-                    }
-                }
-
-                // Replace ClassLoader
-                replaceClassLoader(targetPackage, instanceId, apkPath)
-
-                Timber.tag(TAG).d("Receiver class swap complete: $targetReceiver (instance: $instanceId)")
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Error in RECEIVER handler")
-        }
-
-        return false
-    }
-
     /**
      * Uninstall the hook.
      */
@@ -2048,86 +1744,6 @@ class NextVmInstrumentation(
             }
         } else {
             super.callActivityOnDestroy(activity)
-        }
-    }
-}
-
-/**
- * ProcessKillGuard — Prevents guest apps from killing the host process.
- *
- * Unity and some other apps call Process.killProcess(Process.myPid()) or
- * System.exit(0) during Activity.onDestroy(). In a virtual environment,
- * this kills the entire host process slot (e.g., :p0).
- *
- * This guard works by:
- * 1. Installing a SecurityManager that blocks System.exit() calls
- * 2. Setting a thread-local flag that can be checked by hooked methods
- *
- * Note: Process.killProcess() calls kill(2) via JNI — it cannot be intercepted
- * at the Java level without native hooks (LSPlant/Dobby). This guard handles
- * the System.exit() case. For Process.killProcess(), native hooking is required
- * for a complete solution.
- */
-class ProcessKillGuard private constructor() {
-    class KillInterceptedException : RuntimeException("Process kill blocked by NEXTVM")
-
-    companion object {
-        private const val TAG = "KillGuard"
-        private val guardActive = ThreadLocal<Boolean>()
-
-        fun install(): ProcessKillGuard {
-            guardActive.set(true)
-
-            // Install SecurityManager to block System.exit()
-            try {
-                @Suppress("DEPRECATION")
-                val existingManager = System.getSecurityManager()
-                if (existingManager !is NextVmSecurityManager) {
-                    System.setSecurityManager(NextVmSecurityManager(existingManager))
-                }
-            } catch (e: Exception) {
-                // SecurityManager may not be settable on all Android versions
-                Timber.tag(TAG).d("Could not install SecurityManager: ${e.message}")
-            }
-
-            return ProcessKillGuard()
-        }
-
-        fun isActive(): Boolean = guardActive.get() == true
-    }
-
-    fun uninstall() {
-        guardActive.set(false)
-        try {
-            @Suppress("DEPRECATION")
-            val current = System.getSecurityManager()
-            if (current is NextVmSecurityManager) {
-                System.setSecurityManager(current.delegate)
-            }
-        } catch (_: Exception) {
-            // Ignore — SecurityManager cleanup is best-effort
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private class NextVmSecurityManager(
-        val delegate: SecurityManager?
-    ) : SecurityManager() {
-        override fun checkExit(status: Int) {
-            if (isActive()) {
-                Timber.tag(TAG).i("Blocked System.exit($status) from guest app")
-                throw SecurityException("System.exit blocked by NEXTVM virtual environment")
-            }
-            delegate?.checkExit(status)
-        }
-
-        override fun checkPermission(perm: java.security.Permission?) {
-            // Allow everything else
-            delegate?.checkPermission(perm)
-        }
-
-        override fun checkPermission(perm: java.security.Permission?, context: Any?) {
-            delegate?.checkPermission(perm, context)
         }
     }
 }
