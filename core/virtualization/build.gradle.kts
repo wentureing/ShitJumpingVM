@@ -41,4 +41,8 @@ dependencies {
     // Compose runtime (required by kotlin.compose plugin)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
+
+    // 模块级单测（v151：每个拆分出的模块都要能独立测试）
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
 }
