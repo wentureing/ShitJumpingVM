@@ -1,37 +1,8 @@
 package com.nextvm.core.hook
 
 /**
- * `/proc` 伪造与系统属性覆盖（v154 从 `NativeHookBridge` 拆出）。
- *
- * ## 职责
- * 让 guest 在 `/proc` 与系统属性层面"看起来像自己":
- * - `spoofProcSelf(pid, pkg)`：注册 `/proc/self/{cmdline,comm,status}` 的伪造内容
- * - `setProcSpoofSuspended(b)`：临时关闭 /proc 伪造（某些客户端的 mini-linker 要在
- *   构造时解析**真实** maps，见 CM/SecNeo 案例）
- * - `setProcessName(name)`：用 `prctl` 把内核 comm 改成 guest 名（补足"内核视角"）
- * - `armSeccompDiag(path)`：启用 raw-syscall 诊断（不改结果，只记录）
- * - `spoofSystemProperty` / `spoofSystemProperties`：`__system_property_get` 覆盖
- *
- * ## 不负责
- * - ❌ 伪造内容的**存储**（通过 [setFakeContent] 回写到 `NativeHookBridge.fakeFileContent`）
- * - ❌ native 实现（全部通过回调注入，native 未就绪时为空操作）
- * - ❌ 路径规则 / 隐藏路径（`PathRedirectRegistry` / `NativeHookBridge`）
- *
- * ## 偏差登记
- *
- * | # | 偏差 | 相对谁 | 类型 | 说明 |
- * | --- | --- | --- | --- | --- |
- * | 1 | `/proc/self/*` 返回伪造内容 | AOSP 返回真实内核信息 | ✅ **必要偏差** | 否则 guest 能直接看到容器包名/进程名；这是容器隐匿的基础能力 |
- * | 2 | `setProcSpoofSuspended` 可临时关闭 | — | ✅ **必要偏差** | 实测：CM 客户的 SecNeo mini-linker 在构造时解析真实 maps 来解析 libc 符号；伪造的 maps 会让其注册链静默失败 |
- * | 3 | 属性覆盖只对 `__system_property_get` 生效 | — | ⚠️ **能力边界** | 直接读 `/dev/__properties__` 或 `__system_property_foreach` 的代码看不到覆盖。若客户用这些 API，需要扩展 hook |
- * | 4 | `spoofedPid` 只影响伪造内容与日志 | — | ✅ | 不改变真实 pid（Binder 里仍是真实值） |
- *
- * ## 约束与坑
- * 1. **必须在 guest 进程调用**（`/proc/self` 是进程级的）；主进程不需要。
- * 2. `comm` 有 **15 字符上限**（Linux 内核限制），超长会被截断。
- * 3. 伪造内容写进 `fakeFileContent` 后，**读取路径必须已被 hook**（`open` 等）才会生效；
- *    直接 `syscall` 读的仍然拿到真实内容（这是能力边界，见偏差 #3）。
- * 4. native 未就绪时所有方法只更新 Kotlin 侧状态，不报错（保证 bind 早期可调用）。
+ * /proc 伪造（cmdline/comm/status）与系统属性覆盖。
+ * 详见 `docs/代码镜像/core/hook/ProcSpoofing.md`。
  */
 internal class ProcSpoofing(
     /** 把伪造内容写入读取层（通常是 `NativeHookBridge.fakeFileContent`）。 */

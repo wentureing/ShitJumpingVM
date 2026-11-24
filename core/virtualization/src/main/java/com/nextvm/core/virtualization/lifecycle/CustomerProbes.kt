@@ -11,35 +11,8 @@ import com.nextvm.core.common.findField
 import timber.log.Timber
 
 /**
- * 客户定制探测（v153 从 `VirtualApplicationManager.kt` 整块迁出，原 L3128–3619，492 行）。
- *
- * ## 职责
- * 这些是**为特定客户/特定应用写的运行时探测**，用于定位"某个客户的页面为什么不对"：
- * - `probeAuthIntentPhone` / `probeAuthIntentPhone145`：CMCC 认证 Activity 的 Intent 探测
- *   （代码里硬编码 `com.mc10086.cmcc.authentication.common.AuthenticationActivity`）
- * - `wrapFaceVerifyButton`：人脸核验按钮包装
- * - `probeLoginButtonState`：登录按钮状态采样
- * - `v134ReportedActivities`：去重用的 Activity id 集合
- *
- * ## 不负责
- * - ❌ guest 应用启动（`bindApplication` / `GuestBootSupport`）
- * - ❌ 路径重定向（`GuestPathSetup`）
- * - ❌ 通用诊断（breadcrumb / stack dump 在 `VirtualApplicationManager` 自身）
- *
- * ## 偏差登记
- *
- * | # | 偏差 | 类型 | 说明 |
- * | --- | --- | --- | --- |
- * | 1 | **硬编码客户类名**（`com.mc10086.cmcc...`） | ⚠️ **临时实现（应改为配置驱动）** | 这是为单个客户写的探测，写在容器核心流程里会随客户增加而无限膨胀。**建议后续改成"按包名的探测插件表"**，或整体移到 debug 构建 |
- * | 2 | 探测结果只写文件/logcat，不改行为 | ✅ 安全 | 这些函数**只观测**（除 `wrapFaceVerifyButton` 会包装 View），失败都 try/catch |
- * | 3 | 放在 debug 构建更合适 | 🟡 **待评估** | 目前 release 也会编译进来（有 `DebugFlags` 但不是编译期裁剪）。后续可考虑用 `BuildConfig.DEBUG` 门控 |
- *
- * ## 约束与坑
- * 1. **不能抛**：全部包裹 try/catch；它们挂在 Activity 生命周期回调上。
- * 2. 这些函数是 `internal` 扩展函数，依赖 `VirtualApplicationManager` 的
- *    `internal val v134ReportedActivities`（v153 改可见性）。
- * 3. 客户类名硬编码意味着**换客户就要改代码**——改之前先确认是否还有客户在用。
- * 4. debug 输出走 `DebugTrace`（tag = `customer`）。
+ * 客户定制探测（CMCC 认证 / 人脸核验 / 登录按钮采样），只观测不改行为。
+ * 详见 `docs/代码镜像/core/virtualization/lifecycle/CustomerProbes.md`。
  */
 
     internal val v134ReportedActivities = mutableSetOf<Int>()
