@@ -385,7 +385,8 @@ private fun filterV154Trace(
 
 class VirtualApplicationManager @Inject constructor(
     private val resourceManager: VirtualResourceManager,
-    private val nativeHookBridge: com.nextvm.core.hook.NativeHookBridge
+    private val nativeHookBridge: com.nextvm.core.hook.NativeHookBridge,
+    private val sandboxManager: com.nextvm.core.sandbox.SandboxManager
 ) {
 
     companion object {
@@ -522,6 +523,10 @@ class VirtualApplicationManager @Inject constructor(
                     patchActivityThreadApplication(fwApp)
                     // v142：规则注册点与生效进程不一致的修复 —— guest 进程补注册
                     registerGuestRedirections(fwApp, instanceId, packageName)
+                    // v144：预建目录树，消除启动早期的懒创建竞态
+                    sandboxManager.ensureAppDirsReady(instanceId, packageName)
+                    // v143：假 dataDir（白名单 + 开关），必须早于 WebViewWarmup
+                    patchFrameworkDataDir(fwApp, packageName)
                     registerBreadcrumbCallbacks(fwApp)
                     GuestBreadcrumb.log("bind complete (framework path)")
                     scheduleGuestStackDumps(packageName)
@@ -613,6 +618,8 @@ class VirtualApplicationManager @Inject constructor(
             patchActivityThreadApplication(application)
             // v142：同上
             registerGuestRedirections(application, instanceId, packageName)
+            sandboxManager.ensureAppDirsReady(instanceId, packageName)
+            patchFrameworkDataDir(application, packageName)
             registerBreadcrumbCallbacks(application)
             GuestBreadcrumb.log("bind complete (legacy path)")
             scheduleGuestStackDumps(packageName)
@@ -1203,6 +1210,73 @@ class VirtualApplicationManager @Inject constructor(
         } catch (t: Throwable) {
             GuestBreadcrumb.log(
                 "v142-redirect FAILED: " + t.javaClass.simpleName + ": " + t.message
+            )
+        }
+    }
+
+    /**
+     * v143：把 LoadedApk 的 dataDir 注入为 guest **官方路径**（`/data/user/0/<guest>`）。
+     *
+     * 目的：让 WebView 认为 `file://` 的文件**不在自己的 dataDir 内**，从而不落进
+     * 「dataDir 内文件走特殊 MIME 分支」，改用标准 `FileURLLoader`（按扩展名判 MIME）。
+     *
+     * 两个前提（都已具备）：
+     *   1. `VirtualContext.getApplicationInfo()` 对该 guest 返回**副本**（否则会把本方法
+     *      注入的值原地改回沙箱路径 —— v140 之前实测过）；
+     *   2. `/data/user/0/<guest>/` → 沙箱 的重定向规则已在本进程注册（v142 的 11 条规则）。
+     *
+     * 影响面：白名单（先只 `com.sandbox.probe`）+ 开关 `nextvm.webviewDataDirFake`。
+     */
+    private fun patchFrameworkDataDir(
+        application: android.app.Application,
+        guestPkg: String
+    ) {
+        try {
+            val enabled = try {
+                System.getProperty("nextvm.webviewDataDirFake", "1") != "0"
+            } catch (_: Throwable) {
+                true
+            }
+            if (!enabled) {
+                GuestBreadcrumb.log("v143-datadir disabled by property")
+                return
+            }
+            if (guestPkg != "com.sandbox.probe") {
+                GuestBreadcrumb.log("v143-datadir skip (whitelist) pkg=" + guestPkg)
+                return
+            }
+            val fake = com.nextvm.core.model.VirtualConstants.syntheticDataDir(guestPkg)
+            val loadedApk = try {
+                fieldOf(application.javaClass, "mLoadedApk").get(application)
+            } catch (_: Throwable) {
+                null
+            }
+            if (loadedApk == null) {
+                GuestBreadcrumb.log("v143-datadir FAIL: mLoadedApk=null")
+                return
+            }
+            val parts = StringBuilder()
+            try {
+                val ai = fieldOf(loadedApk.javaClass, "mApplicationInfo")
+                    .get(loadedApk) as? android.content.pm.ApplicationInfo
+                if (ai != null) {
+                    val before = ai.dataDir
+                    ai.dataDir = fake
+                    parts.append(" appInfo ").append(before).append(" -> ").append(ai.dataDir)
+                }
+            } catch (t: Throwable) {
+                parts.append(" appInfo:").append(t.javaClass.simpleName)
+            }
+            try {
+                fieldOf(loadedApk.javaClass, "mDataDir").set(loadedApk, fake)
+                parts.append(" ; mDataDir -> ").append(fake)
+            } catch (t: Throwable) {
+                parts.append(" ; mDataDir:").append(t.javaClass.simpleName)
+            }
+            GuestBreadcrumb.log("v143-datadir pkg=" + guestPkg + parts)
+        } catch (t: Throwable) {
+            GuestBreadcrumb.log(
+                "v143-datadir FAILED: " + t.javaClass.simpleName + ": " + t.message
             )
         }
     }

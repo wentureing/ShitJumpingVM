@@ -69,9 +69,10 @@ object AppModule {
     @Singleton
     fun provideVirtualApplicationManager(
         resourceManager: VirtualResourceManager,
-        nativeHookBridge: com.nextvm.core.hook.NativeHookBridge
+        nativeHookBridge: com.nextvm.core.hook.NativeHookBridge,
+        sandboxManager: com.nextvm.core.sandbox.SandboxManager
     ): VirtualApplicationManager =
-        VirtualApplicationManager(resourceManager, nativeHookBridge)
+        VirtualApplicationManager(resourceManager, nativeHookBridge, sandboxManager)
 
     @Provides
     @Singleton

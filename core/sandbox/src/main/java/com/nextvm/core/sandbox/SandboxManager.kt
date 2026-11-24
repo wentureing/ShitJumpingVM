@@ -95,8 +95,21 @@ class SandboxManager @Inject constructor(
         java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private fun ensureDir(file: File): File {
-        if (ensuredDirs.add(file.absolutePath)) {
-            file.mkdirs()
+        val path = file.absolutePath
+        // v144：已登记且**确实存在**才快速返回（保留"每进程只建一次"的优化）。
+        // 旧实现是 `if (ensuredDirs.add(path)) file.mkdirs()` —— 先登记再创建、
+        // 且丢弃 mkdirs 的返回值，导致：一旦首次创建失败（启动早期父目录链未就绪），
+        // 该路径就被永久记忆为"已确保"，之后永不重试 ->
+        // guest 拿到"登记为已创建但实际不存在"的目录（Via 的 fontDirectory 崩溃就是这么来的）。
+        if (ensuredDirs.contains(path) && file.isDirectory) {
+            return file
+        }
+        // 未登记，或登记过但目录已消失 -> 真正创建；**只有创建成功才登记**。
+        // `mkdirs() || isDirectory`：并发下"别人先建好了"也算成功。
+        if (file.mkdirs() || file.isDirectory) {
+            ensuredDirs.add(path)
+        } else {
+            ensuredDirs.remove(path)
         }
         return file
     }
@@ -135,6 +148,32 @@ class SandboxManager @Inject constructor(
         File(sdcard, "Android/media/$packageName").mkdirs()
 
         Timber.tag(TAG).d("Created data dir for $instanceId at ${appDir.absolutePath}")
+    }
+
+    /**
+     * v144：在 guest bind 时**一次性预建**该实例需要的全部目录。
+     *
+     * 为什么要预建：目录原本是"首次使用时懒创建"，而 guest 启动早期（Application.onCreate
+     * 阶段）各种初始化会并发/提前取目录，容易撞上"父目录链还没建好"的时刻。
+     * 配合旧 `ensureDir` 的"失败也登记"缺陷，就会产生"登记存在但实际不存在"的目录
+     * —— 实测导致 Via 启动必崩（`fontDirectory == null || fontDirectory.isEmpty()`）。
+     *
+     * 本方法失败不阻断启动：`ensureDir` 已改为可重试。
+     */
+    fun ensureAppDirsReady(instanceId: String, packageName: String) {
+        try {
+            createAppDataDir(instanceId, packageName)
+            getFilesDir(instanceId)
+            getCacheDir(instanceId)
+            getSharedPrefsDir(instanceId)
+            getExternalStorageDir(instanceId)
+            // Android/data/<pkg>/files 与 cache —— Via 取字体目录走的就是这条
+            getExternalAppFilesDir(instanceId, packageName, null)
+            getExternalAppCacheDir(instanceId, packageName)
+            Timber.tag(TAG).d("v144 pre-created dirs for $instanceId")
+        } catch (t: Throwable) {
+            Timber.tag(TAG).w(t, "v144 pre-create dirs failed for $instanceId")
+        }
     }
 
     /**

@@ -237,10 +237,85 @@ class VirtualContext(
     override fun getOpPackageName(): String = VirtualConstants.HOST_PACKAGE
 
     override fun getApplicationInfo(): ApplicationInfo {
-        return super.getApplicationInfo().apply {
+        // v143：白名单 guest 返回**副本**，避免原地修改共享的 LoadedApk.mApplicationInfo。
+        // 原因：VirtualApplicationManager 在 bind 时把 LoadedApk 的 dataDir 注入为 guest
+        // 官方路径（让 WebView 的 file:// 不落在"自己的 dataDir 内"），而这里如果继续
+        // 原地改 dataDir，注入值会被覆盖（探针 W36/W37 实测过）。
+        val base = super.getApplicationInfo()
+        val detached = detachedAppInfoEnabled()
+        val target = if (detached) ApplicationInfo(base) else base
+        return target.apply {
             packageName = guestPackageName
-            dataDir = appDir.absolutePath
+            // 白名单 guest 保留注入的 dataDir（副本已带该值）
+            if (!detached) dataDir = appDir.absolutePath
             nativeLibraryDir = sandboxManager.getLibDir(instanceId).absolutePath
+            // Set sourceDir/publicSourceDir to the guest APK so that ReLinker,
+            // GMS, and other libraries that read sourceDir to find native libs
+            // or resources in the APK can locate the correct file.
+            val guestApkPath = sandboxManager.getApkPath(instanceId)
+            if (guestApkPath != null) {
+                sourceDir = guestApkPath
+                publicSourceDir = guestApkPath
+            }
+
+            // Inject guest APK's meta-data so SDKs (GMS, Firebase, AppLovin)
+            // can read their <meta-data> tags. Without this, GMS throws
+            // GooglePlayServicesMissingManifestValueException.
+            // Use cached bundle to avoid re-parsing the APK on every call.
+            val cached = cachedGuestMetaData
+            if (cached != null) {
+                metaData = cached
+            } else if (guestApkPath != null) {
+                try {
+                    val pm = baseContext.packageManager
+                    val pkgInfo = pm.getPackageArchiveInfo(
+                        guestApkPath,
+                        android.content.pm.PackageManager.GET_META_DATA
+                    )
+                    pkgInfo?.applicationInfo?.let { guestInfo ->
+                        guestInfo.sourceDir = guestApkPath
+                        guestInfo.publicSourceDir = guestApkPath
+                    }
+                    val guestMeta = pkgInfo?.applicationInfo?.metaData ?: android.os.Bundle()
+                    // Ensure GMS version is always present
+                    if (!guestMeta.containsKey("com.google.android.gms.version")) {
+                        guestMeta.putInt("com.google.android.gms.version", 243431006)
+                    }
+                    cachedGuestMetaData = guestMeta
+                    metaData = guestMeta
+                } catch (_: Exception) {
+                    val fallback = android.os.Bundle().apply {
+                        putInt("com.google.android.gms.version", 243431006)
+                    }
+                    cachedGuestMetaData = fallback
+                    metaData = fallback
+                }
+            }
+
+            // v135 path fidelity: report stock-install paths instead of
+            // sandbox paths. I/O on these is redirected by v135-pathfidelity.
+            if (pathFidelity) {
+                dataDir = VirtualConstants.syntheticDataDir(guestPackageName)
+                nativeLibraryDir = VirtualConstants.syntheticLibDir(guestPackageName)
+                val synthApk = VirtualConstants.syntheticApkPath(guestPackageName)
+                sourceDir = synthApk
+                publicSourceDir = synthApk
+            }
+        }
+    }
+
+    /**
+     * v143：是否对当前 guest 启用「返回副本」的 ApplicationInfo。
+     *
+     * 仅当同时满足：`nextvm.webviewDataDirFake` 打开，且是该开关的白名单 guest
+     * （先只 `com.sandbox.probe`）。非白名单走原逻辑，影响面严格限制。
+     */
+    private fun detachedAppInfoEnabled(): Boolean = try {
+        System.getProperty("nextvm.webviewDataDirFake", "0") != "0" &&
+            guestPackageName == "com.sandbox.probe"
+    } catch (_: Throwable) {
+        false
+    }
             // Set sourceDir/publicSourceDir to the guest APK so that ReLinker,
             // GMS, and other libraries that read sourceDir to find native libs
             // or resources in the APK can locate the correct file.
