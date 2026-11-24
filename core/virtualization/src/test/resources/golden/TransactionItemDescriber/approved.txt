@@ -1,0 +1,6 @@
+launch-missing-field => LaunchActivityItem cmp=null nextvmExtras=false target=null
+launch-wrong-type => LaunchActivityItem cmp=null nextvmExtras=false target=null
+newintent-missing-field => NewIntentItem intents=[?]
+newintent-wrong-element-type => NewIntentItem <describe failed>
+unknown-item => ClientTransactionItem
+empty-classname => 
