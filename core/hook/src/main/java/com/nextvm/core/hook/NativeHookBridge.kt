@@ -956,6 +956,27 @@ class NativeHookBridge @Inject constructor() {
      */
     private external fun nativeInstallJavaIoHooks(translate: Boolean): Boolean
 
+    /** v146：Java 层 open 统计（"total=… fail=… translated=… translate=…"），供调试落盘。 */
+    private external fun nativeGetJavaIoStats(): String?
+
+    /** v146：重置 Java 层 open 统计。 */
+    private external fun nativeResetJavaIoStats()
+
+    /** 供诊断输出：Java 层 I/O 统计。 */
+    fun javaIoStats(): String? = try {
+        nativeGetJavaIoStats()
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** 重置 Java 层 I/O 统计（guest 启动时调用）。 */
+    fun resetJavaIoStats() {
+        try {
+            nativeResetJavaIoStats()
+        } catch (_: Throwable) {
+        }
+    }
+
     /**
      * Check if the native library is loaded.
      * Since the library is eagerly loaded in companion init {},

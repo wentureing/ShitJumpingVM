@@ -540,6 +540,11 @@ class VirtualApplicationManager @Inject constructor(
                     patchFrameworkDataDir(fwApp, packageName)
                     registerBreadcrumbCallbacks(fwApp)
                     GuestBreadcrumb.log("bind complete (framework path)")
+                    // v146：把 native 侧 Java I/O 统计落盘（guest 的 native 日志会被吞）
+                    com.nextvm.core.common.DebugTrace.event(
+                        "javaIo",
+                        "stats after bind: " + (nativeHookBridge.javaIoStats() ?: "n/a")
+                    )
                     scheduleGuestStackDumps(packageName)
                     scheduleHijackTrace(packageName)
                     DexMemDump.schedule(packageName, fwApp.filesDir)

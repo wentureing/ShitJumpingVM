@@ -6437,6 +6437,11 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeInstallRuntimeLoadHook(
 
 static std::atomic<bool> g_java_io_translate{false};
 static std::atomic<int> g_java_io_open_logs{0};
+// v146：Java 层 open 的统计。guest 的 native 日志会被设备吞掉，
+// 所以把关键计数暴露给 Kotlin，由 DebugTrace 落盘到 debug-trace.log。
+static std::atomic<int> g_java_io_open_total{0};
+static std::atomic<int> g_java_io_open_fail{0};
+static std::atomic<int> g_java_io_translated{0};
 
 /** 构造 java.io.FileDescriptor 并 setInt$(fd) */
 static jobject java_io_make_fd(JNIEnv* env, int fd) {
@@ -6462,7 +6467,12 @@ static void java_io_resolve(JNIEnv* env, jstring path, std::string* out) {
     }
     if (g_java_io_translate.load()) {
         std::string redirected = redirect_path(raw);
-        *out = redirected.empty() ? std::string(raw) : redirected;
+        if (!redirected.empty()) {
+            g_java_io_translated.fetch_add(1);
+            *out = redirected;
+        } else {
+            *out = raw;
+        }
     } else {
         *out = raw;
     }
@@ -6477,6 +6487,7 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
     if (real.empty()) return nullptr;
 
     int n = ++g_java_io_open_logs;
+    g_java_io_open_total.fetch_add(1);
     if (n <= 300) {
         LOGI("JavaIo open%s: %s (flags=0x%x)",
              g_java_io_translate.load() ? "" : "[nofix]",
@@ -6486,6 +6497,7 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
     // 直接调真实 libc（本 .so 属于「容器自身库」，永不被 GOT patch，所以这里是真 open）
     int fd = ::open(real.c_str(), flags, mode);
     if (fd < 0) {
+        g_java_io_open_fail.fetch_add(1);
         jclass nfe = env->FindClass("java/io/FileNotFoundException");
         if (nfe != nullptr) {
             env->ThrowNew(nfe, real.c_str());
@@ -6542,6 +6554,43 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeInstallJavaIoHooks(
 {
     (void)thiz;
     return install_java_io_hooks(env, translate == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * v146：把 Java 层 open 的统计暴露给 Kotlin，由 DebugTrace 落盘。
+ *
+ * 为什么需要：guest 进程的 native 日志（LOGI）在该设备上会被吞，
+ * 而「hook 到底有没有在翻译路径」只能从 native 侧看到。
+ *
+ * 返回格式："total=<n> fail=<n> translated=<n> translate=<0|1>"
+ */
+JNIEXPORT jstring JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeGetJavaIoStats(
+    JNIEnv* env, jobject thiz)
+{
+    (void)thiz;
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "total=%d fail=%d translated=%d translate=%d",
+             g_java_io_open_total.load(),
+             g_java_io_open_fail.load(),
+             g_java_io_translated.load(),
+             g_java_io_translate.load() ? 1 : 0);
+    return env->NewStringUTF(buf);
+}
+
+/**
+ * v146：重置统计（在 guest 启动时调用，便于按次观察）
+ */
+JNIEXPORT void JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeResetJavaIoStats(
+    JNIEnv* env, jobject thiz)
+{
+    (void)env;
+    (void)thiz;
+    g_java_io_open_total.store(0);
+    g_java_io_open_fail.store(0);
+    g_java_io_translated.store(0);
 }
 
 } // extern "C"
