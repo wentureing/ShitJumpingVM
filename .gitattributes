@@ -1,0 +1,6 @@
+# Golden 批准文件必须保持 LF。
+#
+# 原因：golden 是「逐字对比」——换行符变化也算行为变化。
+# 若跟着 core.autocrlf 在 Windows 上被转成 CRLF，本地跑测试会永远失败
+# （实际输出是 LF，读到的期望是 CRLF）。
+**/src/test/resources/golden/** -text

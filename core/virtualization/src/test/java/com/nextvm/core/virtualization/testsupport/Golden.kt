@@ -14,7 +14,8 @@ object Golden {
     /** 比对输出；`UPDATE_GOLDEN=1` 时重录。文件缺失时生成并失败（提示需人工 review）。 */
     fun verify(name: String, actual: String) {
         val file = File(System.getProperty("user.dir"), "$DIR/$name/approved.txt")
-        val expected = if (file.exists()) file.readText() else null
+        // 归一化换行：Windows 工作区可能是 CRLF（.gitattributes 已尽力避免，双保险）
+        val expected = if (file.exists()) file.readText().replace("\r\n", "\n") else null
 
         val update = System.getenv("UPDATE_GOLDEN") == "1"
         if (update || expected == null) {
