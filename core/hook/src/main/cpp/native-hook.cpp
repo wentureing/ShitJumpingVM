@@ -6687,7 +6687,7 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
  * JNI bridge for NativeHookBridge.nativeInstallJavaIoHooks(translate)
  */
 JNIEXPORT jboolean JNICALL
-Java_com_nextvm_core_hook_NativeHookBridge_nativeInstallJavaIoHooks(
+Java_com_nextvm_core_hook_JavaIoHooks_nativeInstall(
     JNIEnv* env, jobject thiz, jboolean translate)
 {
     (void)thiz;
@@ -6703,7 +6703,7 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeInstallJavaIoHooks(
  * 返回格式："total=<n> fail=<n> translated=<n> translate=<0|1>"
  */
 JNIEXPORT jstring JNICALL
-Java_com_nextvm_core_hook_NativeHookBridge_nativeGetJavaIoStats(
+Java_com_nextvm_core_hook_JavaIoHooks_nativeGetStats(
     JNIEnv* env, jobject thiz)
 {
     (void)thiz;
@@ -6721,7 +6721,7 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeGetJavaIoStats(
  * v146：重置统计（在 guest 启动时调用，便于按次观察）
  */
 JNIEXPORT void JNICALL
-Java_com_nextvm_core_hook_NativeHookBridge_nativeResetJavaIoStats(
+Java_com_nextvm_core_hook_JavaIoHooks_nativeResetStats(
     JNIEnv* env, jobject thiz)
 {
     (void)env;
@@ -6740,7 +6740,7 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeResetJavaIoStats(
  * 返回多行文本："#seq op err=<errno|0> flags=0x.. path"
  */
 JNIEXPORT jstring JNICALL
-Java_com_nextvm_core_hook_NativeHookBridge_nativeGetRecentOpens(
+Java_com_nextvm_core_hook_JavaIoHooks_nativeGetRecent(
     JNIEnv* env, jobject thiz)
 {
     (void)thiz;
@@ -6763,7 +6763,7 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeGetRecentOpens(
  * v148：清空最近的 open/access 记录（便于按次观察）
  */
 JNIEXPORT void JNICALL
-Java_com_nextvm_core_hook_NativeHookBridge_nativeClearRecentOpens(
+Java_com_nextvm_core_hook_JavaIoHooks_nativeClearRecent(
     JNIEnv* env, jobject thiz)
 {
     (void)env;

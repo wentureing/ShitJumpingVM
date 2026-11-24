@@ -543,13 +543,13 @@ class VirtualApplicationManager @Inject constructor(
                     // v146：把 native 侧 Java I/O 统计落盘（guest 的 native 日志会被吞）
                     com.nextvm.core.common.DebugTrace.event(
                         "javaIo",
-                        "stats after bind: " + (nativeHookBridge.javaIoStats() ?: "n/a")
+                        "stats after bind: " + (com.nextvm.core.hook.JavaIoHooks.stats() ?: "n/a")
                     )
                     // v148：最近「失败 / 发生翻译」的 open|access 明细
                     com.nextvm.core.common.DebugTrace.event(
                         "javaIo",
                         "recent opens after bind:\n" +
-                            (nativeHookBridge.recentOpens() ?: "n/a")
+                            (com.nextvm.core.hook.JavaIoHooks.recent() ?: "n/a")
                     )
                     scheduleGuestStackDumps(packageName)
                     scheduleHijackTrace(packageName)

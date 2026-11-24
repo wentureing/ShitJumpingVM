@@ -321,37 +321,18 @@ class NativeHookBridge @Inject constructor() {
         //      File.canRead()/canWrite() 依赖异常分支的代码行为改变。
         //
         // 打开方式（仅用于调试/修复验证）：adb shell setprop debug.nextvm.javaIo 1
+        //
+        // v149：安装逻辑与诊断已拆到 JavaIoHooks（本类只负责调用与规则明细输出）。
         if (nativeHooksAvailable) {
-            val install = com.nextvm.core.common.DebugFlags.isOn(
-                com.nextvm.core.common.DebugFlags.JAVA_IO, false
+            com.nextvm.core.hook.JavaIoHooks.install()
+            com.nextvm.core.common.DebugTrace.event(
+                "javaIo",
+                "installed=" + com.nextvm.core.hook.JavaIoHooks.installed +
+                    " nativeAvailable=$nativeHooksAvailable rules=${pathRedirections.size}"
             )
-            val translate = com.nextvm.core.common.DebugFlags.isOn(
-                com.nextvm.core.common.DebugFlags.JAVA_IO_TRANSLATE, true
-            )
-            if (!install) {
-                com.nextvm.core.common.DebugTrace.event(
-                    "javaIo", "SKIPPED by debug.nextvm.javaIo=0（等价于没有 v141）"
-                )
-            } else {
-                val ok = try {
-                    nativeInstallJavaIoHooks(translate)
-                } catch (t: Throwable) {
-                    Timber.tag(TAG).w(t, "nativeInstallJavaIoHooks failed")
-                    com.nextvm.core.common.DebugTrace.fail("javaIo", "install threw", t)
-                    false
-                }
-                com.nextvm.core.common.DebugTrace.event(
-                    "javaIo",
-                    "installed=$ok translate=$translate nativeAvailable=$nativeHooksAvailable" +
-                        " rules=${pathRedirections.size}"
-                )
-                if (ok) {
-                    javaIoHooksInstalled = true
-                }
-                // 详细：规则明细（排查「为什么没翻译」时第一眼看这个）
-                pathRedirections.entries.take(20).forEach { (from, to) ->
-                    com.nextvm.core.common.DebugTrace.detail("javaIo", "rule $from -> $to")
-                }
+            // 详细：规则明细（排查「为什么没翻译」时第一眼看这个）
+            pathRedirections.entries.take(20).forEach { (from, to) ->
+                com.nextvm.core.common.DebugTrace.detail("javaIo", "rule $from -> $to")
             }
         }
 
@@ -360,10 +341,9 @@ class NativeHookBridge @Inject constructor() {
         return true
     }
 
-    /** v141：Java 层文件 I/O 重定向是否已安装（供诊断/探针读取） */
-    @Volatile
-    var javaIoHooksInstalled: Boolean = false
-        private set
+    /** v141：Java 层文件 I/O 重定向是否已安装（转发到 JavaIoHooks，保留旧调用点兼容） */
+    val javaIoHooksInstalled: Boolean
+        get() = com.nextvm.core.hook.JavaIoHooks.installed
 
     /**
      * Add a path redirection rule.
@@ -962,56 +942,6 @@ class NativeHookBridge @Inject constructor() {
      * Returns true on success.
      */
     private external fun nativeInstallRuntimeLoadHook(): Boolean
-
-    /**
-     * v141：用 RegisterNatives 替换 `libcore.io.Linux` 的 open/access，
-     * 让 **Java 层** 文件 I/O 也走路径重定向。
-     *
-     * @param translate false = 只打日志不改路径（空转验证）；true = 真正翻译
-     */
-    private external fun nativeInstallJavaIoHooks(translate: Boolean): Boolean
-
-    /** v146：Java 层 open 统计（"total=… fail=… translated=… translate=…"），供调试落盘。 */
-    private external fun nativeGetJavaIoStats(): String?
-
-    /** v146：重置 Java 层 open 统计。 */
-    private external fun nativeResetJavaIoStats()
-
-    /** v148：最近 N 条「失败 / 发生翻译」的 open|access 记录（多行文本）。 */
-    private external fun nativeGetRecentOpens(): String?
-
-    /** v148：清空最近记录。 */
-    private external fun nativeClearRecentOpens()
-
-    /** 供诊断输出：最近的 open/access 异常与翻译记录。 */
-    fun recentOpens(): String? = try {
-        nativeGetRecentOpens()
-    } catch (_: Throwable) {
-        null
-    }
-
-    /** 清空最近记录（guest 启动时调用，便于按次观察）。 */
-    fun clearRecentOpens() {
-        try {
-            nativeClearRecentOpens()
-        } catch (_: Throwable) {
-        }
-    }
-
-    /** 供诊断输出：Java 层 I/O 统计。 */
-    fun javaIoStats(): String? = try {
-        nativeGetJavaIoStats()
-    } catch (_: Throwable) {
-        null
-    }
-
-    /** 重置 Java 层 I/O 统计（guest 启动时调用）。 */
-    fun resetJavaIoStats() {
-        try {
-            nativeResetJavaIoStats()
-        } catch (_: Throwable) {
-        }
-    }
 
     /**
      * Check if the native library is loaded.
