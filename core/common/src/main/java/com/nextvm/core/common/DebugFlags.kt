@@ -5,9 +5,9 @@ package com.nextvm.core.common
  *
  * 设计目标（按用户要求）：**对 release 与代码管理危害最小**、能用现成工具。
  *
- * 1. **release 自动全关**：以 `ApplicationInfo.FLAG_DEBUGGABLE` 为总闸。
- *    release 包该位为 0 -> [isOn] 一律返回 false -> 不写文件、不读 property、不反射。
- *    因此 release 里只剩「一次 volatile 读」，没有可观测开销，也不会产生任何输出文件。
+ * 1. **release 全关（编译期）**：总闸是 [ENABLED] = `BuildConfig.DEBUG`（编译期常量）。
+ *    release variant 里它是 `false` 字面量，R8 把调试分支整段删除 ——
+ *    release 包里不存在开关读取、反射、文件写入，也不会产生任何输出文件。
  * 2. **可运行时切换**：开关走 Android property（`debug.` 前缀不受 property 白名单限制），
  *    无需重新构建即可二分定位：
  *
@@ -19,6 +19,17 @@ package com.nextvm.core.common
  *    插桩处只写 `DebugFlags.isOn(DebugFlags.JAVA_IO, true)`，不再散落字符串。
  */
 object DebugFlags {
+
+    /**
+     * **编译期总闸**。
+     *
+     * `BuildConfig.DEBUG` 在 release variant 里是 `false` 字面量（AGP 生成，
+     * 不是 `parseBoolean`），因此 R8 能把所有 `if (ENABLED)` 的 false 分支整段删除：
+     * release 包里**不存在**开关读取、反射、文件写入这些代码，也没有任何输出文件。
+     *
+     * debug 包为 true，才按下面的 property 决定各开关。
+     */
+    const val ENABLED: Boolean = BuildConfig.DEBUG
 
     private const val PREFIX = "debug.nextvm."
     private const val CACHE_TTL_MS = 1000L
@@ -46,44 +57,30 @@ object DebugFlags {
     private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
 
     @Volatile
-    private var debuggable = false
-
-    @Volatile
     private var initialized = false
 
     /**
-     * 初始化：判断是否 debuggable 包，并（仅当 debuggable 时）挂上文件日志。
-     * 可在任意进程调用；重复调用无副作用。
+     * 初始化（只在 debug 包做任何事）：挂文件日志 + 记录开关快照。
+     * release 下 [ENABLED] 为 false，本方法直接返回，不会产生文件。
      */
     fun init(context: android.content.Context?) {
+        if (!ENABLED) return
         if (initialized) return
         initialized = true
-        debuggable = try {
-            val flags = context?.applicationInfo?.flags ?: 0
-            (flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        } catch (_: Throwable) {
-            false
-        }
-        // 只有可调试包才落盘，release 不产生任何文件
-        DebugTrace.init(if (debuggable) context?.filesDir else null)
-        if (debuggable) {
-            DebugTrace.event(
-                "flags",
-                "debuggable=true, " + snapshot()
-            )
-        }
+        DebugTrace.init(context?.filesDir)
+        DebugTrace.event("flags", "BuildConfig.DEBUG=true, " + snapshot())
     }
 
-    /** 是否为可调试包（总闸）。 */
-    fun isDebugBuild(): Boolean = debuggable
+    /** 是否为可调试构建（编译期常量，release 下为 false）。 */
+    fun isDebugBuild(): Boolean = ENABLED
 
     /**
      * 读取开关。[name] 用本文件里的常量。
      *
-     * release（非 debuggable）下固定返回 false —— 调用点因此成为死分支。
+     * release（非 debug 构建）下固定返回 false —— 该分支会被 R8 删除。
      */
     fun isOn(name: String, default: Boolean): Boolean {
-        if (!debuggable) return false
+        if (!ENABLED) return false
         val now = android.os.SystemClock.elapsedRealtime()
         cache[name]?.let { if (now - it.at < CACHE_TTL_MS) return it.value }
         val raw = readProperty(PREFIX + name)
