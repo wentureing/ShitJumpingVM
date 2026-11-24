@@ -306,6 +306,20 @@ class NativeHookBridge @Inject constructor() {
             if (ok) {
                 javaIoHooksInstalled = true
             }
+            // 诊断落盘：该设备上 guest 进程的 Log.i 会被吞（vivo 按 uid 管控），
+            // 所以把 hook 状态与规则快照写到 filesDir，用 run-as 直接读。
+            try {
+                val diag = java.io.File(appContext?.filesDir, "v141-javaio.log")
+                diag.appendText(
+                    "installed=" + ok + " translate=" + translate +
+                        " nativeAvailable=" + nativeHooksAvailable +
+                        " rules=" + pathRedirections.size + "\n"
+                )
+                pathRedirections.entries.take(12).forEach { (from, to) ->
+                    diag.appendText("  " + from + " -> " + to + "\n")
+                }
+            } catch (_: Throwable) {
+            }
         }
 
         initialized = true
