@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import com.nextvm.core.common.DebugTrace
+import com.nextvm.core.common.findField
 import timber.log.Timber
 
 /**
@@ -313,7 +314,7 @@ import timber.log.Timber
                 if (cur != null &&
                     !cur.javaClass.name.contains("V134ClickWrapper")
                 ) {
-                    lField.set(info, V134ClickWrapper(cur))
+                    lField.set(info, newV134ClickWrapper(cur))
                     GuestBreadcrumb.log(
                         "v134-face-probe listener wrapped " +
                             "view=${candidate.javaClass.name} " +

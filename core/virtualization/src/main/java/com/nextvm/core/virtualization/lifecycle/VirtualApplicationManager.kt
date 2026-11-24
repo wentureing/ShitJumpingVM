@@ -3031,6 +3031,17 @@ class VirtualApplicationManager @Inject constructor(
      * shorthand, not the label. The old exact match therefore
      * never fired.
      */
+    /**
+     * v155：给 CustomerProbes 用的工厂方法。
+     *
+     * `V134ClickWrapper` 是私有嵌套类且依赖本类的 v155 状态机，
+     * 无法随客户探测块一起迁出；这里只暴露一个构造入口，
+     * 让 `CustomerProbes` 的扩展函数可以拿到包装器。
+     */
+    internal fun newV134ClickWrapper(
+        original: android.view.View.OnClickListener
+    ): android.view.View.OnClickListener = V134ClickWrapper(original)
+
     private class V134ClickWrapper(
         private val original: android.view.View.OnClickListener
     ) : android.view.View.OnClickListener {
