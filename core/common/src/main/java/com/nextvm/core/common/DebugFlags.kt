@@ -24,12 +24,16 @@ object DebugFlags {
      * **编译期总闸**。
      *
      * `BuildConfig.DEBUG` 在 release variant 里是 `false` 字面量（AGP 生成，
-     * 不是 `parseBoolean`），因此 R8 能把所有 `if (ENABLED)` 的 false 分支整段删除：
-     * release 包里**不存在**开关读取、反射、文件写入这些代码，也没有任何输出文件。
+     * 不是 `parseBoolean`），因此 R8 能把所有 `isDebugBuild()`/`ENABLED` 的 false
+     * 分支整段删除：release 包里**不存在**开关读取、反射、文件写入这些代码。
      *
      * debug 包为 true，才按下面的 property 决定各开关。
+     *
+     * 注：不能用 `const val`（Kotlin 不把跨模块 Java `static final` 视作编译期常量），
+     * 但 `val` + 单例 + final 仍能被 R8 内联并折叠。
      */
-    const val ENABLED: Boolean = BuildConfig.DEBUG
+    @JvmField
+    val ENABLED: Boolean = BuildConfig.DEBUG
 
     private const val PREFIX = "debug.nextvm."
     private const val CACHE_TTL_MS = 1000L

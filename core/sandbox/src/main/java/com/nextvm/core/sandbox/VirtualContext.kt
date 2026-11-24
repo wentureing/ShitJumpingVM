@@ -322,7 +322,6 @@ class VirtualContext(
         com.nextvm.core.common.DebugFlags.isOn(
             com.nextvm.core.common.DebugFlags.WEBVIEW_DATA_DIR_FAKE, true
         ) && guestPackageName == "com.sandbox.probe"
-    }
 
     override fun getPackageManager(): PackageManager {
         // Return the real PackageManager — our IPackageManager proxy handles
