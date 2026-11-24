@@ -13,7 +13,16 @@ internal object MainLooperGuard {
 
     private const val TAG = "ATHook"
 
+    /** 幂等保护：重复 install 会嵌套 Looper.loop()，导致消息被重复分发。 */
+    private val installed = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun install() {
+        if (!installed.compareAndSet(false, true)) {
+            Timber.tag(TAG).w("MainLooperGuard 已安装，跳过重复 install（避免嵌套 looper）")
+            com.nextvm.core.common.DebugTrace.event("guard", "duplicate install blocked")
+            return
+        }
+        com.nextvm.core.common.DebugTrace.event("guard", "installing main looper guard")
         try {
             Handler(Looper.getMainLooper()).post {
                 while (true) {
