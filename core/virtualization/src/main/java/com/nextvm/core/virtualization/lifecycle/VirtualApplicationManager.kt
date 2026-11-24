@@ -462,10 +462,21 @@ class VirtualApplicationManager @Inject constructor(
         providerMetaData: Map<String, Bundle> = emptyMap(),
         frameworkLoadedApk: Any? = null
     ): Application? {
+        // v145：guest 进程在这里能拿到可靠可写的 Context（VirtualContext → 沙箱 files），
+        // 补一次调试初始化。initNativeHooks 那处传的 context 可能为 null
+        // （getOrCreateClassLoader 调用），否则 guest 侧永远没有 debug-trace.log。
+        com.nextvm.core.common.DebugFlags.init(virtualContext)
+        com.nextvm.core.common.DebugTrace.event(
+            "bindApplication", "enter pkg=$packageName instance=$instanceId"
+        )
+
         // Check if already bound
         val existing = applications[instanceId]
         if (existing != null && existing.state != ApplicationState.TERMINATED) {
             Timber.tag(TAG).d("Application already bound for $instanceId, returning existing")
+            com.nextvm.core.common.DebugTrace.event(
+                "bindApplication", "already bound, return existing"
+            )
             return existing.application
         }
 

@@ -251,11 +251,29 @@ class VirtualContext(
         // 原地改 dataDir，注入值会被覆盖（探针 W36/W37 实测过）。
         val base = super.getApplicationInfo()
         val detached = detachedAppInfoEnabled()
+        // v145：把决策结果写进 debug-trace —— 「假 dataDir 到底有没有生效」一眼可见。
+        // getApplicationInfo 是高频率调用，所以前 3 次用 event（默认可见），之后降级为 detail。
+        val seq = appInfoLogSeq.getAndIncrement()
+        val msg = "detached=$detached baseDataDir=${base.dataDir} pkg=$guestPackageName"
+        if (seq < 3) {
+            com.nextvm.core.common.DebugTrace.event("appInfo", "#$seq $msg")
+        } else {
+            com.nextvm.core.common.DebugTrace.detail("appInfo", "#$seq $msg")
+        }
         val target = if (detached) ApplicationInfo(base) else base
         return target.apply {
             packageName = guestPackageName
-            // 白名单 guest 保留注入的 dataDir（副本已带该值）
-            if (!detached) dataDir = appDir.absolutePath
+            // v143-fix：白名单 guest **直接返回 guest 官方路径**。
+            //
+            // 为什么不再去 patch LoadedApk.mApplicationInfo：那条路已验证无效 ——
+            // VirtualContext.super 拿到的是**容器 ContextImpl** 的 LoadedApk，
+            // 与 guest application.mLoadedApk 不是同一个对象，注入值没人读
+            // （探针 W37 实测：breadcrumb 显示注入成功，但读到的仍是沙箱路径）。
+            dataDir = if (detached) {
+                VirtualConstants.syntheticDataDir(guestPackageName)
+            } else {
+                appDir.absolutePath
+            }
             nativeLibraryDir = sandboxManager.getLibDir(instanceId).absolutePath
             // Set sourceDir/publicSourceDir to the guest APK so that ReLinker,
             // GMS, and other libraries that read sourceDir to find native libs
@@ -318,6 +336,9 @@ class VirtualContext(
      * 仅当同时满足：`nextvm.webviewDataDirFake` 打开，且是该开关的白名单 guest
      * （先只 `com.sandbox.probe`）。非白名单走原逻辑，影响面严格限制。
      */
+    /** v145：getApplicationInfo 的诊断计数（前几次用 event 保证默认可见） */
+    private val appInfoLogSeq = java.util.concurrent.atomic.AtomicInteger()
+
     private fun detachedAppInfoEnabled(): Boolean =
         com.nextvm.core.common.DebugFlags.isOn(
             com.nextvm.core.common.DebugFlags.WEBVIEW_DATA_DIR_FAKE, true

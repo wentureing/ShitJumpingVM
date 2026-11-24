@@ -98,10 +98,14 @@ object DebugFlags {
         return value
     }
 
-    /** 供诊断输出：当前所有已知开关的取值。 */
+    /** 供诊断输出：当前所有已知开关的取值（每项用自己的真实默认值，避免误报）。 */
     fun snapshot(): String = listOf(
-        JAVA_IO, JAVA_IO_TRANSLATE, VERBOSE, GUEST_REDIRECT, WEBVIEW_DATA_DIR_FAKE
-    ).joinToString(", ") { n -> n + "=" + isOn(n, true) }
+        JAVA_IO to true,
+        JAVA_IO_TRANSLATE to true,
+        VERBOSE to false,
+        GUEST_REDIRECT to true,
+        WEBVIEW_DATA_DIR_FAKE to true
+    ).joinToString(", ") { (n, d) -> n + "=" + isOn(n, d) }
 
     private fun readProperty(key: String): String? = try {
         val cls = Class.forName("android.os.SystemProperties")
