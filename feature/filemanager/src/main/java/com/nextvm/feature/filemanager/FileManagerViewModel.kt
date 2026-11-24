@@ -115,7 +115,9 @@ class FileManagerViewModel @Inject constructor(
     private val fileOps: FileOperationsManager
 ) : ViewModel() {
 
-    private val virtualRoot: File = context.getDir("virtual", Context.MODE_PRIVATE)
+    // 同 AppModule：真实沙箱根在 files/virtual，不是 app_virtual
+    // 改这里后文件管理器能看到真实的 data/ apks/ apps/ snapshots/
+    private val virtualRoot: File = File(context.filesDir, "virtual")
 
     private val _uiState = MutableStateFlow(FileManagerUiState())
     val uiState: StateFlow<FileManagerUiState> = _uiState.asStateFlow()

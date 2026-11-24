@@ -218,7 +218,7 @@ class NativeHookBridge @Inject constructor() {
                 appContext?.let { ctx ->
                     try {
                         nativeSetHostDataPrefix(ctx.dataDir.absolutePath)
-                        val virtualRoot = ctx.getDir("virtual", android.content.Context.MODE_PRIVATE).absolutePath
+                        val virtualRoot = java.io.File(ctx.filesDir, "virtual").absolutePath
                         nativeSetVirtualDataRoot(virtualRoot)
                         Timber.tag(TAG).d("Native prefix=%s, root=%s", ctx.dataDir.absolutePath, virtualRoot)
                     } catch (e: Exception) {

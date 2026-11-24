@@ -225,7 +225,11 @@ object AppModule {
     fun provideSandboxManager(
         @ApplicationContext context: Context
     ): SandboxManager {
-        val virtualRoot = context.getDir("virtual", Context.MODE_PRIVATE)
+        // 与 VirtualEngine.kt:163 保持一致：真实沙箱根是 <dataDir>/files/virtual
+        // getDir("virtual") 返回的是 <dataDir>/app_virtual（空壳：0 个文件、只有空目录）
+        // 双轨导致 UI/CmdReceiver 看到空沙箱，详见
+        // docs/records/记录-双轨沙箱实证-UI看到空的真因.md
+        val virtualRoot = java.io.File(context.filesDir, "virtual")
         return SandboxManager(context, virtualRoot)
     }
 
