@@ -120,8 +120,8 @@ class VirtualContext(
 
     // === File system overrides ===
 
-    override fun getFilesDir(): File =
-        if (pathFidelity) {
+    override fun getFilesDir(): File {
+        val dir = if (pathFidelity) {
             // Ensure the sandbox dir exists; return the stock-looking path.
             // I/O on it is redirected to the sandbox by v135-pathfidelity.
             sandboxManager.getFilesDir(instanceId)
@@ -129,6 +129,9 @@ class VirtualContext(
         } else {
             sandboxManager.getFilesDir(instanceId)
         }
+        com.nextvm.core.common.DebugTrace.detail("ctx", "getFilesDir -> ${dir.absolutePath}")
+        return dir
+    }
 
     override fun getCacheDir(): File =
         if (pathFidelity) {
@@ -166,7 +169,12 @@ class VirtualContext(
         }
 
     override fun getExternalFilesDir(type: String?): File {
-        return sandboxManager.getExternalAppFilesDir(instanceId, guestPackageName, type)
+        val dir = sandboxManager.getExternalAppFilesDir(instanceId, guestPackageName, type)
+        // v145：Via 的 fontDirectory 就是从这里取的，必须能看见返回值
+        com.nextvm.core.common.DebugTrace.detail(
+            "ctx", "getExternalFilesDir(type=$type) -> ${dir.absolutePath} exists=${dir.exists()}"
+        )
+        return dir
     }
 
     override fun getExternalFilesDirs(type: String?): Array<File> {
@@ -310,65 +318,10 @@ class VirtualContext(
      * 仅当同时满足：`nextvm.webviewDataDirFake` 打开，且是该开关的白名单 guest
      * （先只 `com.sandbox.probe`）。非白名单走原逻辑，影响面严格限制。
      */
-    private fun detachedAppInfoEnabled(): Boolean = try {
-        System.getProperty("nextvm.webviewDataDirFake", "0") != "0" &&
-            guestPackageName == "com.sandbox.probe"
-    } catch (_: Throwable) {
-        false
-    }
-            // Set sourceDir/publicSourceDir to the guest APK so that ReLinker,
-            // GMS, and other libraries that read sourceDir to find native libs
-            // or resources in the APK can locate the correct file.
-            val guestApkPath = sandboxManager.getApkPath(instanceId)
-            if (guestApkPath != null) {
-                sourceDir = guestApkPath
-                publicSourceDir = guestApkPath
-            }
-
-            // Inject guest APK's meta-data so SDKs (GMS, Firebase, AppLovin)
-            // can read their <meta-data> tags. Without this, GMS throws
-            // GooglePlayServicesMissingManifestValueException.
-            // Use cached bundle to avoid re-parsing the APK on every call.
-            val cached = cachedGuestMetaData
-            if (cached != null) {
-                metaData = cached
-            } else if (guestApkPath != null) {
-                try {
-                    val pm = baseContext.packageManager
-                    val pkgInfo = pm.getPackageArchiveInfo(
-                        guestApkPath,
-                        android.content.pm.PackageManager.GET_META_DATA
-                    )
-                    pkgInfo?.applicationInfo?.let { guestInfo ->
-                        guestInfo.sourceDir = guestApkPath
-                        guestInfo.publicSourceDir = guestApkPath
-                    }
-                    val guestMeta = pkgInfo?.applicationInfo?.metaData ?: android.os.Bundle()
-                    // Ensure GMS version is always present
-                    if (!guestMeta.containsKey("com.google.android.gms.version")) {
-                        guestMeta.putInt("com.google.android.gms.version", 243431006)
-                    }
-                    cachedGuestMetaData = guestMeta
-                    metaData = guestMeta
-                } catch (_: Exception) {
-                    val fallback = android.os.Bundle().apply {
-                        putInt("com.google.android.gms.version", 243431006)
-                    }
-                    cachedGuestMetaData = fallback
-                    metaData = fallback
-                }
-            }
-
-            // v135 path fidelity: report stock-install paths instead of
-            // sandbox paths. I/O on these is redirected by v135-pathfidelity.
-            if (pathFidelity) {
-                dataDir = VirtualConstants.syntheticDataDir(guestPackageName)
-                nativeLibraryDir = VirtualConstants.syntheticLibDir(guestPackageName)
-                val synthApk = VirtualConstants.syntheticApkPath(guestPackageName)
-                sourceDir = synthApk
-                publicSourceDir = synthApk
-            }
-        }
+    private fun detachedAppInfoEnabled(): Boolean =
+        com.nextvm.core.common.DebugFlags.isOn(
+            com.nextvm.core.common.DebugFlags.WEBVIEW_DATA_DIR_FAKE, true
+        ) && guestPackageName == "com.sandbox.probe"
     }
 
     override fun getPackageManager(): PackageManager {

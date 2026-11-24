@@ -106,11 +106,21 @@ class SandboxManager @Inject constructor(
         }
         // 未登记，或登记过但目录已消失 -> 真正创建；**只有创建成功才登记**。
         // `mkdirs() || isDirectory`：并发下"别人先建好了"也算成功。
-        if (file.mkdirs() || file.isDirectory) {
+        val created = file.mkdirs()
+        val ok = created || file.isDirectory
+        if (ok) {
             ensuredDirs.add(path)
         } else {
             ensuredDirs.remove(path)
+            // v145：目录创建失败是排查的第一线索（曾使 Via 拿不到 fontDirectory 而崩溃）。
+            // 失败始终写，不受 verbose 开关影响。
+            com.nextvm.core.common.DebugTrace.fail(
+                "ensureDir", "mkdirs FAILED path=$path"
+            )
         }
+        com.nextvm.core.common.DebugTrace.detail(
+            "ensureDir", "path=$path created=$created ok=$ok"
+        )
         return file
     }
 

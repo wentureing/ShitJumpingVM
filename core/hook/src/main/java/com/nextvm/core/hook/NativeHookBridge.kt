@@ -200,6 +200,13 @@ class NativeHookBridge @Inject constructor() {
     fun initNativeHooks(context: android.content.Context? = null): Boolean {
         if (initialized) return true
 
+        // v145：统一调试开关初始化（release 包自动全关；debug 包才落盘）
+        com.nextvm.core.common.DebugFlags.init(context)
+        com.nextvm.core.common.DebugTrace.event(
+            "initNativeHooks",
+            "enter proc=" + (runCatching { android.app.Application.getProcessName() }.getOrNull() ?: "?")
+        )
+
         // P0-3: 容器主进程不装 hook。
         //
         // 理由：主进程的所有文件访问用的都是**真实路径**
@@ -227,11 +234,17 @@ class NativeHookBridge @Inject constructor() {
         if (hostPkg != null && procName == hostPkg) {
             initialized = true
             Timber.tag(TAG).i("initNativeHooks skipped: container main process (proc=%s)", procName)
+            com.nextvm.core.common.DebugTrace.event(
+                "initNativeHooks", "skip: container main process (proc=$procName)"
+            )
             return false
         }
 
         appContext = context?.applicationContext
         Timber.tag(TAG).i("Initializing native hook bridge...")
+        com.nextvm.core.common.DebugTrace.event(
+            "initNativeHooks", "guest process confirmed (proc=$procName), installing hooks"
+        )
 
         // Phase 1: Java-level IO hooks
         val javaHooksInstalled = installJavaIoHooks()
@@ -282,43 +295,48 @@ class NativeHookBridge @Inject constructor() {
         ROOT_PATHS.forEach { hiddenPaths.add(it) }
         EMULATOR_PATHS.forEach { hiddenPaths.add(it) }
 
-        // v141: Java 层文件 I/O 重定向（RegisterNatives 替换 libcore.io.Linux 的
+        // v141/v145: Java 层文件 I/O 重定向（RegisterNatives 替换 libcore.io.Linux 的
         // native 方法）。必须在 native 库加载 + 路径规则同步之后安装，因为替换实现
         // 会直接读 native 侧的 g_path_redirects 表。
         //
         // 安全边界：本方法在**主进程**已提前 return（上面的 P0-3 判断），所以这里
-        // 只会发生在 guest 进程；translate=false 时只打日志不改路径（空转验证）。
+        // 只会发生在 guest 进程。
+        //
+        // v145 把两个开关拆开，便于「只切一个变量」的严格对照：
+        //   debug.nextvm.javaIo=0            -> 完全不装 hook（等价于没有 v141）
+        //   debug.nextvm.javaIoTranslate=0   -> 装 hook 但不翻译路径（隔离"hook 本身"的影响）
+        //   (都=1，默认)                      -> 装 + 翻译
         if (nativeHooksAvailable) {
-            val translate = try {
-                System.getProperty("nextvm.javaIoRedirect", "1") != "0"
-            } catch (_: Throwable) {
-                false
-            }
-            val ok = try {
-                nativeInstallJavaIoHooks(translate)
-            } catch (t: Throwable) {
-                Timber.tag(TAG).w(t, "nativeInstallJavaIoHooks failed")
-                false
-            }
-            Timber.tag(TAG).i(
-                "Java IO redirect hooks: installed=%s translate=%s", ok, translate
+            val install = com.nextvm.core.common.DebugFlags.isOn(
+                com.nextvm.core.common.DebugFlags.JAVA_IO, true
             )
-            if (ok) {
-                javaIoHooksInstalled = true
-            }
-            // 诊断落盘：该设备上 guest 进程的 Log.i 会被吞（vivo 按 uid 管控），
-            // 所以把 hook 状态与规则快照写到 filesDir，用 run-as 直接读。
-            try {
-                val diag = java.io.File(appContext?.filesDir, "v141-javaio.log")
-                diag.appendText(
-                    "installed=" + ok + " translate=" + translate +
-                        " nativeAvailable=" + nativeHooksAvailable +
-                        " rules=" + pathRedirections.size + "\n"
+            val translate = com.nextvm.core.common.DebugFlags.isOn(
+                com.nextvm.core.common.DebugFlags.JAVA_IO_TRANSLATE, true
+            )
+            if (!install) {
+                com.nextvm.core.common.DebugTrace.event(
+                    "javaIo", "SKIPPED by debug.nextvm.javaIo=0（等价于没有 v141）"
                 )
-                pathRedirections.entries.take(12).forEach { (from, to) ->
-                    diag.appendText("  " + from + " -> " + to + "\n")
+            } else {
+                val ok = try {
+                    nativeInstallJavaIoHooks(translate)
+                } catch (t: Throwable) {
+                    Timber.tag(TAG).w(t, "nativeInstallJavaIoHooks failed")
+                    com.nextvm.core.common.DebugTrace.fail("javaIo", "install threw", t)
+                    false
                 }
-            } catch (_: Throwable) {
+                com.nextvm.core.common.DebugTrace.event(
+                    "javaIo",
+                    "installed=$ok translate=$translate nativeAvailable=$nativeHooksAvailable" +
+                        " rules=${pathRedirections.size}"
+                )
+                if (ok) {
+                    javaIoHooksInstalled = true
+                }
+                // 详细：规则明细（排查「为什么没翻译」时第一眼看这个）
+                pathRedirections.entries.take(20).forEach { (from, to) ->
+                    com.nextvm.core.common.DebugTrace.detail("javaIo", "rule $from -> $to")
+                }
             }
         }
 

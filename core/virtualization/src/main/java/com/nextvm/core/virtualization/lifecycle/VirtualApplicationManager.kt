@@ -1189,9 +1189,18 @@ class VirtualApplicationManager @Inject constructor(
         guestPkg: String
     ) {
         try {
+            if (!com.nextvm.core.common.DebugFlags.isOn(
+                    com.nextvm.core.common.DebugFlags.GUEST_REDIRECT, true
+                )
+            ) {
+                GuestBreadcrumb.log("v142-redirect skipped by debug.nextvm.guestRedirect=0")
+                com.nextvm.core.common.DebugTrace.event("v142", "SKIPPED by flag")
+                return
+            }
             val appDir = application.filesDir?.parentFile
             if (appDir == null) {
                 GuestBreadcrumb.log("v142-redirect skip: filesDir=null")
+                com.nextvm.core.common.DebugTrace.fail("v142", "filesDir=null")
                 return
             }
             val sdcardDir = java.io.File(appDir, "sdcard")
@@ -1200,6 +1209,11 @@ class VirtualApplicationManager @Inject constructor(
             )
             nativeHookBridge.setupAppRedirections(
                 guestPkg, instanceId, appDir.absolutePath
+            )
+            com.nextvm.core.common.DebugTrace.event(
+                "v142",
+                "registered rules=" + nativeHookBridge.getPathRedirectSnapshot().size +
+                    " appDir=" + appDir.absolutePath + " sdcard=" + sdcardDir.absolutePath
             )
             GuestBreadcrumb.log(
                 "v142-redirect registered rules=" +
@@ -1232,17 +1246,17 @@ class VirtualApplicationManager @Inject constructor(
         guestPkg: String
     ) {
         try {
-            val enabled = try {
-                System.getProperty("nextvm.webviewDataDirFake", "1") != "0"
-            } catch (_: Throwable) {
-                true
-            }
+            val enabled = com.nextvm.core.common.DebugFlags.isOn(
+                com.nextvm.core.common.DebugFlags.WEBVIEW_DATA_DIR_FAKE, true
+            )
             if (!enabled) {
-                GuestBreadcrumb.log("v143-datadir disabled by property")
+                GuestBreadcrumb.log("v143-datadir disabled by debug.nextvm.webviewDataDirFake=0")
+                com.nextvm.core.common.DebugTrace.event("v143", "SKIPPED by flag")
                 return
             }
             if (guestPkg != "com.sandbox.probe") {
                 GuestBreadcrumb.log("v143-datadir skip (whitelist) pkg=" + guestPkg)
+                com.nextvm.core.common.DebugTrace.detail("v143", "skip whitelist pkg=$guestPkg")
                 return
             }
             val fake = com.nextvm.core.model.VirtualConstants.syntheticDataDir(guestPkg)
@@ -1273,6 +1287,7 @@ class VirtualApplicationManager @Inject constructor(
             } catch (t: Throwable) {
                 parts.append(" ; mDataDir:").append(t.javaClass.simpleName)
             }
+            com.nextvm.core.common.DebugTrace.event("v143", "datadir pkg=" + guestPkg + parts)
             GuestBreadcrumb.log("v143-datadir pkg=" + guestPkg + parts)
         } catch (t: Throwable) {
             GuestBreadcrumb.log(
