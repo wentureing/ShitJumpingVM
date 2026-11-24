@@ -1971,40 +1971,11 @@ class VirtualApplicationManager @Inject constructor(
             // Read guest paths from VirtualContext.getApplicationInfo()
             val guestAppInfo = virtualContext.applicationInfo
 
-            // v139-webview-datadir：给 WebView 的 dataDir 与真实文件位置"不对齐"。
-            //
-            // 依据（探针 W36）：W2 的 file:// URL 落在 WebView 认为的 dataDir 下 -> text/plain；
-            // /data/local/tmp 不在 -> text/html。Gemini 侧（Gaia）给 WebView 的 dataDir 是 guest
-            // 官方路径、与真实文件位置不一致，所以它正常。
-            //
-            // 风险（必须清楚）：NS_HOOK_SYSTEM_LIBS=0 -> libc 不 patch -> **Java 层文件 I/O
-            // 没有重定向能力**。因此 framework 内部若用 dataDir 拼路径读文件，会读到不存在的
-            // 官方路径。native 侧有 setupAppRedirections 的
-            // "/data/user/0/<guest>/" -> 沙箱 规则兜底，但 Java 侧没有。
-            //
-            // 所以第一批只对探针启用（Via 的文件访问更复杂，探针验证通过后再放开）。
-            val fakeDataDirForWebView: String? = try {
-                val enabled = System.getProperty("nextvm.webviewDataDirFake", "1") != "0"
-                if (enabled && guestAppInfo.packageName == "com.sandbox.probe") {
-                    com.nextvm.core.model.VirtualConstants
-                        .syntheticDataDir(guestAppInfo.packageName)
-                } else {
-                    null
-                }
-            } catch (_: Throwable) {
-                null
-            }
-
             // Patch the LoadedApk's ApplicationInfo with guest paths
             loadedApkAppInfo.nativeLibraryDir = guestAppInfo.nativeLibraryDir
             loadedApkAppInfo.sourceDir = guestAppInfo.sourceDir
             loadedApkAppInfo.publicSourceDir = guestAppInfo.sourceDir
-            loadedApkAppInfo.dataDir = fakeDataDirForWebView ?: guestAppInfo.dataDir
-            GuestBreadcrumb.log(
-                "v139-datadir pkg=" + guestAppInfo.packageName +
-                    " dataDir=" + loadedApkAppInfo.dataDir +
-                    " fake=" + (fakeDataDirForWebView != null)
-            )
+            loadedApkAppInfo.dataDir = guestAppInfo.dataDir
 
             // CRITICAL: Also patch LoadedApk.mLibDir which is used by
             // Runtime.nativeLoad() to construct the library search path.
