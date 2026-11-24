@@ -384,7 +384,8 @@ private fun filterV154Trace(
 }
 
 class VirtualApplicationManager @Inject constructor(
-    private val resourceManager: VirtualResourceManager
+    private val resourceManager: VirtualResourceManager,
+    private val nativeHookBridge: com.nextvm.core.hook.NativeHookBridge
 ) {
 
     companion object {
@@ -519,6 +520,8 @@ class VirtualApplicationManager @Inject constructor(
                     // WebViewWarmup 会主动预热 WebViewFactory，provider 一旦初始化，
                     // 它看到的 context 就固化了。
                     patchActivityThreadApplication(fwApp)
+                    // v142：规则注册点与生效进程不一致的修复 —— guest 进程补注册
+                    registerGuestRedirections(fwApp, instanceId, packageName)
                     registerBreadcrumbCallbacks(fwApp)
                     GuestBreadcrumb.log("bind complete (framework path)")
                     scheduleGuestStackDumps(packageName)
@@ -608,6 +611,8 @@ class VirtualApplicationManager @Inject constructor(
             GuestBreadcrumb.attachFile(application.filesDir)
             // v138-appctx：同上，必须早于 registerBreadcrumbCallbacks（WebViewWarmup 会预热）
             patchActivityThreadApplication(application)
+            // v142：同上
+            registerGuestRedirections(application, instanceId, packageName)
             registerBreadcrumbCallbacks(application)
             GuestBreadcrumb.log("bind complete (legacy path)")
             scheduleGuestStackDumps(packageName)
@@ -1160,6 +1165,48 @@ class VirtualApplicationManager @Inject constructor(
      *
      * 开关：`System.setProperty("nextvm.webviewAppContext", "0")` 可关（fork 前设置）。
      */
+    /**
+     * v142：在 **guest 进程** 里注册本实例的路径重定向规则。
+     *
+     * 为什么需要：规则目前只在 `VirtualEngine.launch()`（**主进程**）注册，而
+     * `NativeHookBridge` 的规则表是**进程级**的（@Singleton，每进程一份）。
+     * 探针实测（v141-javaio.log）：guest 进程 `rules=0` —— 所以即使 Java 层 hook
+     * 装成功（installed=true），翻译也永远命中不了任何规则。
+     *
+     * 这是「Java 层重定向装上但无效」的直接原因，也是路径机制里一处真正的架构缺口：
+     * 规则的注册点与生效进程不一致。
+     */
+    private fun registerGuestRedirections(
+        application: android.app.Application,
+        instanceId: String,
+        guestPkg: String
+    ) {
+        try {
+            val appDir = application.filesDir?.parentFile
+            if (appDir == null) {
+                GuestBreadcrumb.log("v142-redirect skip: filesDir=null")
+                return
+            }
+            val sdcardDir = java.io.File(appDir, "sdcard")
+            nativeHookBridge.setupExternalStorageRedirections(
+                instanceId, sdcardDir.absolutePath
+            )
+            nativeHookBridge.setupAppRedirections(
+                guestPkg, instanceId, appDir.absolutePath
+            )
+            GuestBreadcrumb.log(
+                "v142-redirect registered rules=" +
+                    nativeHookBridge.getPathRedirectSnapshot().size +
+                    " appDir=" + appDir.absolutePath +
+                    " sdcard=" + sdcardDir.absolutePath
+            )
+        } catch (t: Throwable) {
+            GuestBreadcrumb.log(
+                "v142-redirect FAILED: " + t.javaClass.simpleName + ": " + t.message
+            )
+        }
+    }
+
     private fun patchActivityThreadApplication(application: android.app.Application) {
         val enabled = try {
             System.getProperty("nextvm.webviewAppContext", "1") != "0"
