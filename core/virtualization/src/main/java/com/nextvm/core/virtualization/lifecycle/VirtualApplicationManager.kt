@@ -515,6 +515,10 @@ class VirtualApplicationManager @Inject constructor(
                 )
                 if (fwApp != null) {
                     GuestBreadcrumb.attachFile(fwApp.filesDir)
+                    // v138-appctx：必须早于 registerBreadcrumbCallbacks —— 那里的
+                    // WebViewWarmup 会主动预热 WebViewFactory，provider 一旦初始化，
+                    // 它看到的 context 就固化了。
+                    patchActivityThreadApplication(fwApp)
                     registerBreadcrumbCallbacks(fwApp)
                     GuestBreadcrumb.log("bind complete (framework path)")
                     scheduleGuestStackDumps(packageName)
@@ -602,6 +606,8 @@ class VirtualApplicationManager @Inject constructor(
             restoreInstrumentation(legacyPrevInstr)
 
             GuestBreadcrumb.attachFile(application.filesDir)
+            // v138-appctx：同上，必须早于 registerBreadcrumbCallbacks（WebViewWarmup 会预热）
+            patchActivityThreadApplication(application)
             registerBreadcrumbCallbacks(application)
             GuestBreadcrumb.log("bind complete (legacy path)")
             scheduleGuestStackDumps(packageName)
@@ -1124,6 +1130,95 @@ class VirtualApplicationManager @Inject constructor(
             }
         }
         throw NoSuchFieldException(name + " on " + cls.name)
+    }
+
+    /**
+     * v138-appctx：把 ActivityThread 记录的「进程 Application」指向 guest。
+     *
+     * ## 为什么
+     *
+     * WebView 的两处入口都从它取 context（framework.jar 反汇编实测）：
+     * ```
+     * android.webkit.WebViewFactory    <- AppGlobals.getInitialApplication()
+     * android.webkit.WebViewDelegate   <- ActivityThread.currentApplication()
+     * ```
+     * 而 `AppGlobals.getInitialApplication()` = `currentActivityThread().mInitialApplication`。
+     *
+     * 容器里这个字段是**容器的** Application，于是 WebView 拿到的
+     * packageName / applicationInfo / assets 全是容器的：
+     * - `<guest APK>/assets` 打不开 → 探针 W3 `EMPTY` + `Unable to open asset URL`
+     * - 普通 `file://` 拿不到流 → 落到 `guessContentTypeFromStream` 内容嗅探
+     *   → HTML 没有魔数 → `text/plain` → 探针 W2 显示源码（Via 主页现象）
+     *
+     * 改成 guest Application 后，WebView 自己就能按扩展名判 MIME
+     * （同一设备 Gaia 内实测 W2/W3 都正常，它也是靠这一层而非包装 client）。
+     *
+     * ## 时机
+     *
+     * 必须早于第一次 `WebViewFactory.getProvider()`。本函数在
+     * `registerBreadcrumbCallbacks()` **之前**调用 —— 后者里的 `WebViewWarmup`
+     * 会主动预热 provider（一旦预热，context 就固化了）。
+     *
+     * ## 影响面（需要回归验证）
+     *
+     * framework.jar 里实测 **96 个类**调用 `currentApplication()`/`getInitialApplication()`，
+     * 包括 `Environment`、`StorageManager`、`Settings.*`、`ContentResolver`、
+     * `AppOpsManager`、`ResourcesManager`、`PackageInstaller`、`MediaPlayer` 等。
+     * 它们都会开始看到 guest 的 context —— 这是虚拟化本来的目标，但属于
+     * 「一次改动影响很多模块」，必须按 Via 做回归（启动/主页/长按/保存网页）。
+     *
+     * 开关：`System.setProperty("nextvm.webviewAppContext", "0")` 可关（fork 前设置）。
+     */
+    private fun patchActivityThreadApplication(application: android.app.Application) {
+        val enabled = try {
+            System.getProperty("nextvm.webviewAppContext", "1") != "0"
+        } catch (_: Throwable) {
+            true
+        }
+        if (!enabled) {
+            GuestBreadcrumb.log("v138-appctx disabled by property")
+            return
+        }
+        try {
+            val atClass = Class.forName("android.app.ActivityThread")
+            val thread = try {
+                atClass.getMethod("currentActivityThread").invoke(null)
+            } catch (_: Throwable) {
+                null
+            }
+            if (thread == null) {
+                GuestBreadcrumb.log("v138-appctx skip: currentActivityThread()=null")
+                return
+            }
+
+            val initialField = fieldOf(atClass, "mInitialApplication")
+            val before = (initialField.get(thread) as? android.content.Context)?.packageName
+            initialField.set(thread, application)
+
+            var bindInfo = "none"
+            try {
+                val bindField = fieldOf(atClass, "mBoundApplication")
+                val bindData = bindField.get(thread)
+                if (bindData != null) {
+                    val ctxField = fieldOf(bindData.javaClass, "appContext")
+                    val beforeCtx =
+                        (ctxField.get(bindData) as? android.content.Context)?.packageName
+                    ctxField.set(bindData, application)
+                    bindInfo = "$beforeCtx -> ${application.packageName}"
+                }
+            } catch (t: Throwable) {
+                bindInfo = "failed: " + t.javaClass.simpleName
+            }
+
+            GuestBreadcrumb.log(
+                "v138-appctx mInitialApplication " + before + " -> " +
+                    application.packageName + " ; mBoundApplication.appContext " + bindInfo
+            )
+        } catch (t: Throwable) {
+            GuestBreadcrumb.log(
+                "v138-appctx FAILED: " + t.javaClass.simpleName + ": " + t.message
+            )
+        }
     }
 
     private fun sampleHijackState(out: java.io.File, label: String) {
