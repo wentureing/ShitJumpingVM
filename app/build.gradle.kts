@@ -1,3 +1,10 @@
+// Gradle Kotlin DSL 里不能写 java.util.Properties / java.io.File ——
+// `java` 会被优先解析成 Gradle 的 JavaPluginExtension（java { } 块），
+// 于是 java.util 报 Unresolved reference: util（CI #22 已踩：probe/build.gradle.kts:12）。
+// 必须在脚本顶部 import，并用 alias 避开名字冲突。
+import java.io.File as JavaFile
+import java.util.Properties as JavaProperties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -26,16 +33,19 @@ plugins {
 // 正确做法：显式声明 signingConfigs，storeFile 用**绝对路径**，不依赖任何推断。
 // 凭据来源优先级：CI 环境变量 > local.properties > 无（此时 debug 退回 AGP 默认，
 // 并在 CI 里由 "Require fixed keystore" 步骤强制拦截）。
-val signingProps = java.util.Properties().apply {
+val signingProps = JavaProperties()
+run {
     val f = rootProject.file("local.properties")
-    if (f.exists()) f.inputStream().use { load(it) }
+    if (f.exists()) {
+        f.inputStream().use { signingProps.load(it) }
+    }
 }
 val ksStore: String? = System.getenv("STORE_FILE_NAME") ?: signingProps.getProperty("STORE_FILE_NAME")
 val ksStorePwd: String? = System.getenv("KEYSTORE_PASSWORD") ?: signingProps.getProperty("KEYSTORE_PASSWORD")
 val ksAlias: String? = System.getenv("STORE_ALIAS") ?: signingProps.getProperty("STORE_ALIAS")
 val ksKeyPwd: String? = System.getenv("KEY_PASSWORD") ?: signingProps.getProperty("KEY_PASSWORD")
 val hasFixedKeystore: Boolean =
-    ksStore != null && java.io.File(ksStore).exists() && ksStorePwd != null
+    ksStore != null && JavaFile(ksStore).exists() && ksStorePwd != null
 logger.lifecycle(
     "[signing] fixed keystore = " + (if (hasFixedKeystore) "$ksStore (exists)" else "NOT FOUND") +
         " | user.home=" + System.getProperty("user.home")
