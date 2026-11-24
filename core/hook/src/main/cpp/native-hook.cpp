@@ -214,30 +214,6 @@ static void patch_newly_loaded_libraries();
 // ==================== Path Redirection Logic ====================
 
 /**
- * 导入通道只读豁免（sandboxsensor p18）。
- *
- * 背景：CmdReceiver 的 INSTALL 走「路径通道」——File(apkPath) -> FileInputStream
- * -> open()，会被 redirect_path() 把 /sdcard 改写到沙箱，于是读不到真实 APK
- * （报 "APK file not found"）。而容器 UI 的「browse APK」走 SAF
- * (ACTION_OPEN_DOCUMENT) -> ContentResolver.openInputStream() -> 拿到 **fd**，
- * fd 已打开、不过路径解析，所以 UI 能导入、命令行不能。
- *
- * 这里对「导入用的公共目录」放行只读访问，让 INSTALL 一条命令就能吃
- * /sdcard/Download/*.apk，不必再 push + run-as 复制。
- *
- * 约束：
- *   * 只豁免只读（O_RDONLY）；写通道留待后续，且必须过 caller_is_guest 检查，
- *     防止 guest 污染公共目录。
- *   * 只豁免公共/临时目录，guest 本来就能访问，不算新增泄漏。
- */
-static bool is_import_read_exempt(const char* path) {
-    if (path == nullptr || path[0] != '/') return false;
-    return strncmp(path, "/sdcard/Download/", 18) == 0 ||
-           strncmp(path, "/storage/emulated/0/Download/", 30) == 0 ||
-           strncmp(path, "/data/local/tmp/", 17) == 0;
-}
-
-/**
  * Check if a path is hidden.
  */
 static bool is_path_hidden(const char* path) {
@@ -694,12 +670,6 @@ static int hooked_open(const char* path, int flags, ...) {
         }
     }
 
-    // 导入通道只读豁免（p18）：让 INSTALL 能直接读 /sdcard/Download/*.apk
-    if ((flags & O_ACCMODE) == O_RDONLY && is_import_read_exempt(path)) {
-        LOGD("open: import exempt (read): %s", path);
-        return real_open(path, flags);
-    }
-
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -736,12 +706,7 @@ static int hooked_openat(int dirfd, const char* path, int flags, ...) {
         }
     }
 
-    // 导入通道只读豁免（p18），见 is_import_read_exempt 的注释
     if (path != nullptr && path[0] == '/' &&
-        (flags & O_ACCMODE) == O_RDONLY && is_import_read_exempt(path)) {
-        LOGD("openat: import exempt (read): %s", path);
-        return real_openat(dirfd, path, flags);
-    }
 
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
@@ -769,15 +734,6 @@ static int hooked_access(const char* path, int mode) {
         return -1;
     }
 
-    // 导入通道读豁免（p18 补全）：File.exists()/stat()/fopen() 也必须放行，
-    // 否则 installApp 里 File(apkPath).exists() 走 access() 会被重定向到沙箱，
-    // 直接报 "APK file not found"（实测：/sdcard/Download 失败而 /data/local/tmp 成功）。
-    // 只放行只读检查：access(path, W_OK) 不能被豁免，否则 guest 能探测写权限
-    // （mode 里 W_OK=2；F_OK=0、R_OK=4 都满足 (mode & W_OK) == 0）
-    if (is_import_read_exempt(path) && (mode & W_OK) == 0) {
-        return real_access(path, mode);
-    }
-
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -793,13 +749,6 @@ static int hooked_stat(const char* path, struct stat* buf) {
         return -1;
     }
 
-        // 导入通道读豁免（p18 补全）：File.exists()/stat()/fopen() 也必须放行，
-    // 否则 installApp 里 File(apkPath).exists() 走 access() 会被重定向到沙箱，
-    // 直接报 "APK file not found"（实测：/sdcard/Download 失败而 /data/local/tmp 成功）。
-    if (is_import_read_exempt(path)) {
-        return real_stat(path, buf);
-    }
-
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
@@ -813,11 +762,6 @@ static int hooked_lstat(const char* path, struct stat* buf) {
     if (is_path_hidden(path)) {
         errno = ENOENT;
         return -1;
-    }
-
-        // 导入通道读豁免（p18 补全），见 hooked_access 的注释
-    if (is_import_read_exempt(path)) {
-        return real_lstat(path, buf);
     }
 
     std::string redirected = redirect_path(path);
@@ -952,10 +896,6 @@ static FILE* hooked_fopen(const char* path, const char* mode) {
         }
     }
 
-        // 导入通道读豁免（p18 补全）：仅对只读模式放行
-    // 只放行纯只读："r+"/"rb+"/"w+" 都是可写，必须排除。
-    // strchr(mode, '+') == nullptr 才能真正保证不可写。
-    if (is_import_read_exempt(path) && mode != nullptr &&
         mode[0] == 'r' && strchr(mode, '+') == nullptr) {
         return real_fopen(path, mode);
     }
@@ -4743,7 +4683,6 @@ bool sc_serve_notif(struct seccomp_notif* req,
             return false;
         }
     }
-
 
     // v92 (launch118): combined raw mapping witness, record-only.
     if (g_v92_probe &&

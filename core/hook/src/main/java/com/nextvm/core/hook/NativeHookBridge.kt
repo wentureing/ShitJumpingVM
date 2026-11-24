@@ -200,6 +200,27 @@ class NativeHookBridge @Inject constructor() {
     fun initNativeHooks(context: android.content.Context? = null): Boolean {
         if (initialized) return true
 
+        // P0-3: 容器主进程不装 hook。
+        //
+        // 理由：主进程的所有文件访问用的都是**真实路径**
+        //   - installApp 读 /sdcard/Download/x.apk（真实）
+        //   - 写沙箱 <dataDir>/files/virtual/...（也是真实）
+        //   - collectProbeOutput 读 context.filesDir（真实）
+        // 装 hook 之后这些真实路径会被 redirect_path 重定向到沙箱 -> 反而读不到，
+        // 所以历史上要额外加 is_import_read_exempt 来绕过自己的 hook。
+        // 主进程不装 hook 后，整个豁免机制可以删掉。
+        // 详见 docs/changes/20261124-p0-3-main-process-no-hook-scope.md
+        //
+        // guest 进程（:p0-:p9）仍会装 hook：由 getOrCreateClassLoader 调用本方法。
+        // NativeHookBridge 是 @Singleton（Hilt），每个进程一份，initialized 是进程级。
+        val procName = android.app.Application.getProcessName()
+        val hostPkg = context?.packageName
+        if (hostPkg != null && procName == hostPkg) {
+            initialized = true
+            Timber.tag(TAG).i("initNativeHooks skipped: container main process (proc=%s)", procName)
+            return false
+        }
+
         appContext = context?.applicationContext
         Timber.tag(TAG).i("Initializing native hook bridge...")
 
