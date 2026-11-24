@@ -40,11 +40,7 @@ import timber.log.Timber
      */
     internal fun VirtualApplicationManager.probeAuthIntentPhone(a: android.app.Activity) {
         try {
-            if (a.javaClass.name !=
-                "com.mc10086.cmcc.authentication.common.AuthenticationActivity"
-            ) {
-                return
-            }
+            if (!isCmccAuthActivity(a.javaClass.name)) return
             val intent = try {
                 a.intent
             } catch (_: Throwable) {
@@ -118,11 +114,7 @@ import timber.log.Timber
      */
     internal fun VirtualApplicationManager.probeAuthIntentPhone145(a: android.app.Activity) {
         try {
-            if (a.javaClass.name !=
-                "com.mc10086.cmcc.authentication.common.AuthenticationActivity"
-            ) {
-                return
-            }
+            if (!isCmccAuthActivity(a.javaClass.name)) return
             val intent = try {
                 a.intent
             } catch (_: Throwable) {
@@ -187,11 +179,7 @@ import timber.log.Timber
 
     internal fun VirtualApplicationManager.wrapFaceVerifyButton(a: android.app.Activity) {
         try {
-            if (a.javaClass.name !=
-                "com.mc10086.cmcc.authentication.common.AuthenticationActivity"
-            ) {
-                return
-            }
+            if (!isCmccAuthActivity(a.javaClass.name)) return
             val decor = try {
                 a.window?.decorView
             } catch (_: Throwable) {
@@ -506,3 +494,7 @@ import timber.log.Timber
             )
         }
     }
+
+/** 是否为 CMCC 认证 Activity（客户探测的入口判断，纯函数便于单测）。 */
+internal fun isCmccAuthActivity(className: String): Boolean =
+    className == "com.mc10086.cmcc.authentication.common.AuthenticationActivity"

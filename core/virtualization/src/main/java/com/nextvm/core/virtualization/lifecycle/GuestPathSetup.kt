@@ -64,7 +64,7 @@ internal fun VirtualApplicationManager.patchFrameworkDataDir(
             DebugTrace.event("v143", "SKIPPED by flag")
             return
         }
-        if (guestPkg != "com.sandbox.probe") {
+        if (!isFakeDataDirWhitelisted(guestPkg)) {
             GuestBreadcrumb.log("v143-datadir skip (whitelist) pkg=$guestPkg")
             DebugTrace.detail("v143", "skip whitelist pkg=$guestPkg")
             return
@@ -105,3 +105,7 @@ internal fun VirtualApplicationManager.patchFrameworkDataDir(
         DebugTrace.fail("v143", "patch failed", t)
     }
 }
+
+/** 假 dataDir 的白名单（当前只有探针；纯函数便于单测）。 */
+internal fun isFakeDataDirWhitelisted(packageName: String): Boolean =
+    packageName == "com.sandbox.probe"
