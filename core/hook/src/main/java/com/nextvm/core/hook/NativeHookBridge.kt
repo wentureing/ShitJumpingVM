@@ -165,15 +165,34 @@ class NativeHookBridge @Inject constructor() {
         Timber.tag(TAG).w("Runtime.nativeLoad hook not available \u2014 CheckJNI may still abort on null caller")    }
 
     // Path redirection rules: fromPrefix -> toPrefix
-    private val pathRedirections = ConcurrentHashMap<String, String>()
+    /**
+     * v154：路径规则表已拆成独立类（纯逻辑、可单测）。
+     * native 同步通过回调注入；hidden 判定仍用本类的 hiddenPaths。
+     */
+    private val pathRedirects = PathRedirectRegistry(
+        isHidden = { hiddenPaths.contains(it) },
+        onAdd = { from, to -> if (nativeHooksAvailable) nativeAddPathRedirection(from, to) },
+        onRemove = { from -> if (nativeHooksAvailable) nativeRemovePathRedirection(from) },
+        onClear = { if (nativeHooksAvailable) nativeClearPathRedirections() }
+    )
+
+    /**
+     * v154：/proc 伪造与属性覆盖已拆到 ProcSpoofing。
+     * 伪造内容仍写回本类的 fakeFileContent（读取层在这里 hook）。
+     */
+    private val procSpoofing = ProcSpoofing(
+        setFakeContent = { path, content -> fakeFileContent[path] = content },
+        nativeAvailable = { nativeHooksAvailable },
+        nativeSpoofProcSelf = { pid, pkg -> nativeSpoofProcSelf(pid, pkg) },
+        nativeSetProcSpoofSuspended = { s -> nativeSetProcSpoofSuspended(s) },
+        nativeSetProcessName = { n -> nativeSetProcessName(n) },
+        nativeArmSeccompDiag = { p -> nativeArmSeccompDiag(p) },
+        nativeSpoofSystemProperty = { k, v -> nativeSpoofSystemProperty(k, v) }
+    )
 
     // /proc/self spoofing data
-    private var spoofedPackageName: String? = null
-    private var spoofedPid: Int = -1
-    private var spoofedProcessName: String? = null
 
     // System property overrides
-    private val propertyOverrides = ConcurrentHashMap<String, String>()
 
     // Paths to hide (return ENOENT)
     private val hiddenPaths = ConcurrentHashMap.newKeySet<String>()
@@ -283,7 +302,7 @@ class NativeHookBridge @Inject constructor() {
         // redirect native file opens.
         if (nativeHooksAvailable) {
             try {
-                pathRedirections.forEach { (from, to) ->
+                pathRedirects.snapshot().forEach { (from, to) ->
                     nativeAddPathRedirection(from, to)
                 }
             } catch (e: Exception) {
@@ -328,10 +347,10 @@ class NativeHookBridge @Inject constructor() {
             com.nextvm.core.common.DebugTrace.event(
                 "javaIo",
                 "installed=" + com.nextvm.core.hook.JavaIoHooks.installed +
-                    " nativeAvailable=$nativeHooksAvailable rules=${pathRedirections.size}"
+                    " nativeAvailable=$nativeHooksAvailable rules=${pathRedirects.size()}"
             )
             // 详细：规则明细（排查「为什么没翻译」时第一眼看这个）
-            pathRedirections.entries.take(20).forEach { (from, to) ->
+            pathRedirects.snapshot().entries.take(20).forEach { (from, to) ->
                 com.nextvm.core.common.DebugTrace.detail("javaIo", "rule $from -> $to")
             }
         }
@@ -355,39 +374,27 @@ class NativeHookBridge @Inject constructor() {
      */
     // v139 probe getters (public for VirtualEngine's redirect probe;
     // isNativeAvailable already exists below).
-    fun getPathRedirectSnapshot(): Map<String, String> = pathRedirections.toMap()
+    fun getPathRedirectSnapshot(): Map<String, String> = pathRedirects.snapshot()
     fun getNativeRedirectCount(): Int =
         try { nativeGetRedirectCount() } catch (e: Exception) { -1 }
 
     fun addPathRedirection(fromPrefix: String, toPrefix: String) {
-        pathRedirections[fromPrefix] = toPrefix
-        Timber.tag(TAG).d("Path redirect: $fromPrefix -> $toPrefix")
-
-        // If native hooks are available, push to native layer
-        if (nativeHooksAvailable) {
-            nativeAddPathRedirection(fromPrefix, toPrefix)
-        }
+        // v154：规则表已拆到 PathRedirectRegistry（含 native 同步回调）
+        pathRedirects.add(fromPrefix, toPrefix)
     }
 
     /**
      * Remove a path redirection.
      */
     fun removePathRedirection(fromPrefix: String) {
-        pathRedirections.remove(fromPrefix)
-        if (nativeHooksAvailable) {
-            nativeRemovePathRedirection(fromPrefix)
-        }
+        pathRedirects.remove(fromPrefix)
     }
 
     /**
      * Clear all path redirections.
      */
     fun clearPathRedirections() {
-        pathRedirections.clear()
-        if (nativeHooksAvailable) {
-            nativeClearPathRedirections()
-        }
-        Timber.tag(TAG).d("All path redirections cleared")
+        pathRedirects.clear()
     }
 
     /**
@@ -534,26 +541,8 @@ class NativeHookBridge @Inject constructor() {
      * @param packageName The virtual app's package name (for cmdline)
      */
     fun spoofProcSelf(pid: Int, packageName: String) {
-        spoofedPid = pid
-        spoofedPackageName = packageName
-        spoofedProcessName = packageName
-
-        // Create fake /proc/self/cmdline content
-        fakeFileContent[PROC_SELF_CMDLINE] = packageName.toByteArray() + byteArrayOf(0)
-
-        // Create fake /proc/self/comm content
-        val commName = packageName.take(15) // Linux limits comm to 15 chars
-        fakeFileContent[PROC_SELF_COMM] = "$commName\n".toByteArray()
-
-        // Create sanitized /proc/self/maps (hide NEXTVM entries)
-        // Actual maps content will be filtered on read
-        fakeFileContent[PROC_SELF_STATUS] = buildFakeProcStatus(pid, packageName)
-
-        if (nativeHooksAvailable) {
-            nativeSpoofProcSelf(pid, packageName)
-        }
-
-        Timber.tag(TAG).d("/proc/self spoofed: pid=$pid, pkg=$packageName")
+        // v154：实现已拆到 ProcSpoofing
+        procSpoofing.spoofProcSelf(pid, packageName)
     }
 
     /**
@@ -564,10 +553,7 @@ class NativeHookBridge @Inject constructor() {
      * the spoofed maps silently abort its registration chain.
      */
     fun setProcSpoofSuspended(suspended: Boolean) {
-        if (nativeHooksAvailable) {
-            nativeSetProcSpoofSuspended(suspended)
-        }
-        Timber.tag(TAG).d("/proc spoof suspended=$suspended")
+        procSpoofing.setProcSpoofSuspended(suspended)
     }
 
     /**
@@ -578,10 +564,7 @@ class NativeHookBridge @Inject constructor() {
      * guest's everywhere, not only on hooked read paths.
      */
     fun setProcessName(name: String) {
-        if (nativeHooksAvailable) {
-            nativeSetProcessName(name)
-        }
-        Timber.tag(TAG).d("Process renamed to guest: $name")
+        procSpoofing.setProcessName(name)
     }
 
     /**
@@ -592,9 +575,7 @@ class NativeHookBridge @Inject constructor() {
      * altered. Call once per guest stub process, before bind.
      */
     fun armSeccompDiag(logPath: String) {
-        if (nativeHooksAvailable) {
-            nativeArmSeccompDiag(logPath)
-        }
+        procSpoofing.armSeccompDiag(logPath)
     }
 
     /**
@@ -602,13 +583,7 @@ class NativeHookBridge @Inject constructor() {
      * Hooks __system_property_get to return our value.
      */
     fun spoofSystemProperty(key: String, value: String) {
-        propertyOverrides[key] = value
-
-        if (nativeHooksAvailable) {
-            nativeSpoofSystemProperty(key, value)
-        }
-
-        Timber.tag(TAG).d("System property override: $key=$value")
+        procSpoofing.spoofSystemProperty(key, value)
     }
 
     /**
@@ -660,27 +635,8 @@ class NativeHookBridge @Inject constructor() {
      * Public API for other components to use.
      */
     fun translatePath(originalPath: String): String {
-        // Check if path should be hidden
-        if (hiddenPaths.contains(originalPath)) {
-            return "/dev/null" // Will fail to open properly
-        }
-
-        // Apply redirection rules (longest prefix match)
-        var bestMatch = ""
-        var bestRedirect = ""
-        for ((from, to) in pathRedirections) {
-            if (originalPath.startsWith(from) && from.length > bestMatch.length) {
-                bestMatch = from
-                bestRedirect = to
-            }
-        }
-
-        if (bestMatch.isNotEmpty()) {
-            val redirected = originalPath.replace(bestMatch, bestRedirect)
-            return redirected
-        }
-
-        return originalPath
+        // v154：实现已拆到 PathRedirectRegistry（最长前缀匹配 + 隐藏路径）
+        return pathRedirects.translate(originalPath)
     }
 
     /**
@@ -701,12 +657,13 @@ class NativeHookBridge @Inject constructor() {
     /**
      * Get a system property override.
      */
-    fun getPropertyOverride(key: String): String? = propertyOverrides[key]
+    fun getPropertyOverride(key: String): String? =
+        procSpoofing.propertyOverridesSnapshot()[key]
 
     /**
      * Get current redirection rules count.
      */
-    fun getRedirectionCount(): Int = pathRedirections.size
+    fun getRedirectionCount(): Int = pathRedirects.size()
 
     /**
      * Get current hidden paths count.
@@ -722,12 +679,10 @@ class NativeHookBridge @Inject constructor() {
      * Clean up all hooks and state.
      */
     fun cleanup() {
-        pathRedirections.clear()
+        pathRedirects.clear()
         hiddenPaths.clear()
         fakeFileContent.clear()
-        propertyOverrides.clear()
-        spoofedPackageName = null
-        spoofedPid = -1
+        procSpoofing.reset()
 
         if (nativeHooksAvailable) {
             nativeCleanup()
@@ -829,29 +784,6 @@ class NativeHookBridge @Inject constructor() {
     /**
      * Build fake /proc/self/status content.
      */
-    private fun buildFakeProcStatus(pid: Int, packageName: String): ByteArray {
-        val name = packageName.take(15)
-        return """
-            |Name:	$name
-            |Umask:	0077
-            |State:	S (sleeping)
-            |Tgid:	$pid
-            |Ngid:	0
-            |Pid:	$pid
-            |PPid:	${pid - 1}
-            |TracerPid:	0
-            |Uid:	10${pid % 1000}	10${pid % 1000}	10${pid % 1000}	10${pid % 1000}
-            |Gid:	10${pid % 1000}	10${pid % 1000}	10${pid % 1000}	10${pid % 1000}
-            |FDSize:	256
-            |Groups:	3003 9997 20${pid % 1000} 50${pid % 1000}
-            |VmPeak:	   2048000 kB
-            |VmSize:	   1536000 kB
-            |VmRSS:	    256000 kB
-            |Threads:	42
-            |SigPnd:	0000000000000000
-            |ShdPnd:	0000000000000000
-        """.trimMargin().toByteArray()
-    }
 
     /**
      * Filter /proc/self/maps to hide NEXTVM-related entries.

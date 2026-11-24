@@ -44,4 +44,7 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
+
+    // 模块级单测（v154：PathRedirectRegistry / ProcSpoofing）
+    testImplementation(libs.junit)
 }
