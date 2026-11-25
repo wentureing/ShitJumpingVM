@@ -22,6 +22,9 @@ class NextVmApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 路径欺骗配置只在启动时读一次（改配置需重启生效）
+        runCatching { com.nextvm.core.model.PathSpoofConfig.load(filesDir) }
+
 
         // ===== 标准行为记录：Android 官方生命周期回调旁听启动编排顺序 =====
         com.nextvm.core.virtualization.engine.LifecycleRecorder.install(this)

@@ -37,6 +37,14 @@ import dagger.hilt.components.SingletonComponent
  *   adb shell am broadcast -n com.nextvm.app/.CmdReceiver \
  *       -a com.nextvm.cmd.UNINSTALL --es pkg com.example.app
  *
+ *   # 路径欺骗豁免：这些包不做任何路径形态欺骗（不产生合成路径），但仍隔离到沙箱
+ *   # 改完需重启容器/guest 生效
+ *   adb shell am broadcast -n com.nextvm.app/.CmdReceiver \
+ *       -a com.nextvm.cmd.SPOOF_EXEMPT_ADD --es pkg mark.via
+ *   adb shell am broadcast -n com.nextvm.app/.CmdReceiver \
+ *       -a com.nextvm.cmd.SPOOF_EXEMPT_REMOVE --es pkg mark.via
+ *   adb shell am broadcast -n com.nextvm.app/.CmdReceiver -a com.nextvm.cmd.SPOOF_EXEMPT_LIST
+ *
  *   # 列出已安装的 guest（结果打到 logcat -s CmdReceiver）
  *   adb shell am broadcast -n com.nextvm.app/.CmdReceiver -a com.nextvm.cmd.LIST
  *
@@ -201,6 +209,46 @@ class CmdReceiver : BroadcastReceiver() {
                 emitOutChunks(instance, name, bytes)
             }
 
+            ACTION_SPOOF_EXEMPT_ADD -> {
+                val pkg = intent.getStringExtra("pkg")
+                if (pkg.isNullOrBlank()) {
+                    Log.w(TAG, "SPOOF_EXEMPT_ADD: missing --es pkg")
+                    return
+                }
+                val changed = com.nextvm.core.model.PathSpoofConfig.setGuestExempt(pkg, true)
+                Log.i(
+                    TAG,
+                    "SPOOF_EXEMPT_ADD $pkg changed=$changed " +
+                        "list=${com.nextvm.core.model.PathSpoofConfig.exemptList()} " +
+                        "（重启容器/guest 后生效）"
+                )
+            }
+
+            ACTION_SPOOF_EXEMPT_REMOVE -> {
+                val pkg = intent.getStringExtra("pkg")
+                if (pkg.isNullOrBlank()) {
+                    Log.w(TAG, "SPOOF_EXEMPT_REMOVE: missing --es pkg")
+                    return
+                }
+                val changed = com.nextvm.core.model.PathSpoofConfig.setGuestExempt(pkg, false)
+                Log.i(
+                    TAG,
+                    "SPOOF_EXEMPT_REMOVE $pkg changed=$changed " +
+                        "list=${com.nextvm.core.model.PathSpoofConfig.exemptList()} " +
+                        "（重启容器/guest 后生效）"
+                )
+            }
+
+            ACTION_SPOOF_EXEMPT_LIST -> {
+                val list = com.nextvm.core.model.PathSpoofConfig.exemptList()
+                Log.i(
+                    TAG,
+                    "SPOOF_EXEMPT_LIST count=${list.size} " +
+                        "loaded=${com.nextvm.core.model.PathSpoofConfig.isLoaded()}"
+                )
+                list.forEach { Log.i(TAG, "SPOOF_EXEMPT pkg=$it") }
+            }
+
             else -> Log.w(TAG, "unknown action: $action")
         }
     }
@@ -248,5 +296,12 @@ class CmdReceiver : BroadcastReceiver() {
         const val ACTION_COLLECT_OUT = "com.nextvm.cmd.COLLECT_OUT"
         const val ACTION_LIST_OUT = "com.nextvm.cmd.LIST_OUT"
         const val ACTION_CAT_OUT = "com.nextvm.cmd.CAT_OUT"
+
+        // --- 路径欺骗豁免（2026-11-25）---
+        // 豁免 = 不做任何路径形态欺骗（不产生合成路径），但仍隔离到沙箱
+        // 注意：改完需重启容器/guest 才生效
+        const val ACTION_SPOOF_EXEMPT_ADD = "com.nextvm.cmd.SPOOF_EXEMPT_ADD"
+        const val ACTION_SPOOF_EXEMPT_REMOVE = "com.nextvm.cmd.SPOOF_EXEMPT_REMOVE"
+        const val ACTION_SPOOF_EXEMPT_LIST = "com.nextvm.cmd.SPOOF_EXEMPT_LIST"
     }
 }

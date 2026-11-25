@@ -177,9 +177,16 @@ object VirtualConstants {
         "mark.via",
     )
 
-    /** 是否对 packageName 启用 pathFidelity。加包名到上面的白名单即可启用。 */
-    fun isPathFidelityGuest(packageName: String): Boolean =
-        packageName in PATH_FIDELITY_WHITELIST
+    /**
+     * 是否对 packageName 启用 pathFidelity（= 是否产生合成路径）。
+     *
+     * **豁免优先**：PathSpoofConfig 里的豁免名单优先级最高，命中则一律返回 false，
+     * 不产生任何合成路径（但仍隔离到沙箱，规则由 NativeHookBridge 照常注册）。
+     */
+    fun isPathFidelityGuest(packageName: String): Boolean {
+        if (PathSpoofConfig.isGuestExempt(packageName)) return false
+        return packageName in PATH_FIDELITY_WHITELIST
+    }
 
 
     /** Real stock data dir for the guest package (deterministic). */
