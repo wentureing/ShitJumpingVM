@@ -739,8 +739,16 @@ class NativeHookBridge @Inject constructor() {
         }
 
         if (bestMatch.isNotEmpty()) {
-            val redirected = originalPath.replace(bestMatch, bestRedirect)
-            return redirected
+        // 只替换前缀，不能对整条路径做 String.replace ——
+        // 那会把路径中间出现的同样子串一起改掉（/a/x/a/y -> /sandbox/x/sandbox/y）。
+        val rest = originalPath.substring(bestMatch.length)
+        return when {
+            rest.isEmpty() -> bestRedirect
+            bestRedirect.endsWith("/") && rest.startsWith("/") -> bestRedirect + rest.substring(1)
+            bestRedirect.endsWith("/") -> bestRedirect + rest
+            rest.startsWith("/") -> bestRedirect + rest
+            else -> "$bestRedirect/$rest"
+        }
         }
 
         return originalPath
