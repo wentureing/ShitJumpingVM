@@ -149,8 +149,38 @@ object VirtualConstants {
     const val CM_PACKAGE = "com.greenpoint.android.mc10086.activity"
     const val SYNTHETIC_INSTALL_TOKEN = "VmK8x2"
 
+    /**
+     * 走 pathFidelity 的包名白名单 —— **可编辑**。
+     *
+     * 在白名单里 = 该 guest 的 data 目录走"合成路径"（看起来像真机安装，
+     * 实际 I/O 由 v135 规则映射回沙箱）：
+     *   getFilesDir()  -> /data/user/0/<pkg>/files        （假路径，实际不存在）
+     *   getDataDir()   -> /data/user/0/<pkg>
+     *   NativeHookBridge 把 /data/user/0/<pkg>/ 映射回 <sandbox>/
+     *
+     * 不在白名单 = 直接用沙箱路径（会暴露 <hostPkg>/files/virtual/...）。
+     *
+     * 已知缺陷（重要）：合成路径只含包名、**不含 instanceId**。
+     * 同一个 app 装两份时，两个实例的合成路径相同 -> 规则表是
+     * ConcurrentHashMap<from, to>，后注册的覆盖前者 -> 先注册的实例所有 I/O
+     * 跑到另一个实例的沙箱（数据损坏级）。
+     * **当前只支持单实例**。多实例需要改成 /data/user/<10+slot>/<pkg> 之类的按槽位映射。
+     *
+     * 已知缺口：external 目录（getExternalFilesDir/getObbDir/getExternalMediaDirs）
+     * **没有** pathFidelity 分支，仍返回 <sandbox>/sdcard/Android/data/<pkg>/...，
+     * 所以即使在本白名单里，外部存储仍然暴露沙箱。
+     */
+    private val PATH_FIDELITY_WHITELIST: Set<String> = setOf(
+        // 原始定向对抗目标（com.greenpoint.android.mc10086.activity）
+        CM_PACKAGE,
+        // via：验证 file:// 与 WebView MIME 行为（原先 pathFidelity 只对 CM_PACKAGE 开）
+        "mark.via",
+    )
+
+    /** 是否对 packageName 启用 pathFidelity。加包名到上面的白名单即可启用。 */
     fun isPathFidelityGuest(packageName: String): Boolean =
-        packageName == CM_PACKAGE
+        packageName in PATH_FIDELITY_WHITELIST
+
 
     /** Real stock data dir for the guest package (deterministic). */
     fun syntheticDataDir(packageName: String): String =
