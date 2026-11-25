@@ -6,6 +6,9 @@ import android.content.Context
 import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.findField
 import com.nextvm.core.common.runSafe
+import com.nextvm.core.model.PathKind
+import com.nextvm.core.model.PathKinds
+import com.nextvm.core.model.RedirectOwner
 import com.nextvm.core.model.VirtualConstants
 import timber.log.Timber
 import java.io.File
@@ -574,16 +577,21 @@ class NativeHookBridge @Inject constructor() {
     /**
      * Remove all redirections for a virtual app instance.
      */
+    /**
+     * Remove all redirections for a virtual app instance.
+     *
+     * 与 [setupAppRedirections] **对称**：按 [PathKinds] 的 APP 族 + 宿主兜底派生 key。
+     * 旧实现只删 5 条、注册却是 16 条 → media/obb 无斜杠变体与宿主兜底会残留。
+     */
     fun removeAppRedirections(guestPackageName: String) {
-        val prefixes = listOf(
-            "/data/data/$guestPackageName/",
-            "/data/user/0/$guestPackageName/",
-            "/storage/emulated/0/Android/data/$guestPackageName/",
-            "/sdcard/Android/data/$guestPackageName/",
-            "/storage/emulated/0/Android/obb/$guestPackageName/"
-        )
-        prefixes.forEach { removePathRedirection(it) }
-        Timber.tag(TAG).d("App redirections removed for $guestPackageName")
+        val keys = LinkedHashSet<String>()
+        for (kind in PathKind.entries) {
+            if (PathKinds.of(kind).owner != RedirectOwner.APP) continue
+            keys += PathKinds.hostForms(kind, guestPackageName)
+        }
+        keys += PathKinds.hostFallbackForms(VirtualConstants.HOST_PACKAGE)
+        keys.forEach { removePathRedirection(it) }
+        Timber.tag(TAG).d("App redirections removed for $guestPackageName (${keys.size} keys)")
     }
 
     /**
