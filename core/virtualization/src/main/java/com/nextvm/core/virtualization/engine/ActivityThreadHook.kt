@@ -172,6 +172,7 @@ class ActivityThreadHook(
      * This is called for EVERY lifecycle event in the app process.
      */
     private fun handleMessage(msg: Message): Boolean {
+        com.nextvm.core.common.DebugTrace.detail("txn", "mH msg.what=${msg.what}")
         return when (msg.what) {
             EXECUTE_TRANSACTION -> handleExecuteTransaction(msg)
             LAUNCH_ACTIVITY -> handleLegacyLaunchActivity(msg) // Pre-Android 9
@@ -192,6 +193,7 @@ class ActivityThreadHook(
      */
     private fun handleExecuteTransaction(msg: Message): Boolean {
         val transaction = msg.obj ?: return false
+        com.nextvm.core.common.DebugTrace.event("txn", "EXECUTE_TRANSACTION enter")
 
         try {
             val transactionClass = Class.forName("android.app.servertransaction.ClientTransaction")
@@ -373,6 +375,7 @@ class ActivityThreadHook(
      * 4. Register pending context replacement (VirtualContext wrapping)
      */
     private fun handleLaunchActivityItem(item: Any, transactionToken: IBinder? = null): Boolean {
+        com.nextvm.core.common.DebugTrace.event("launch", "LaunchActivityItem enter")
         try {
             val itemClass = item::class.java
 
@@ -858,6 +861,7 @@ class ActivityThreadHook(
      *   LoadedApk.mClassLoader: ClassLoader
      */
     internal fun replaceClassLoader(packageName: String, instanceId: String, apkPath: String) {
+        com.nextvm.core.common.DebugTrace.event("cl", "replace enter pkg=$packageName")
         runSafe(TAG) {
             GuestBreadcrumb.log("replaceClassLoader enter pkg=$packageName instance=$instanceId")
             val atClass = Class.forName("android.app.ActivityThread")
@@ -1249,6 +1253,7 @@ class ActivityThreadHook(
      *   We replace it with a wrapper that intercepts callActivityOnCreate()
      */
     private fun hookInstrumentationIfNeeded() {
+        com.nextvm.core.common.DebugTrace.event("instr", "hookInstrumentationIfNeeded enter")
         if (instrumentationHooked) return
 
         runSafe(TAG) {
