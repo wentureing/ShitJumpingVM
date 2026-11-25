@@ -21,6 +21,7 @@
  *   hooked libc functions ←→ original libc functions (via saved pointers)
  */
 
+#include <limits.h>
 #include <jni.h>
 #include <android/log.h>
 #include <dlfcn.h>
@@ -7249,6 +7250,94 @@ static jobject java_io_stat_impl(JNIEnv* env, jstring jpath, int mode) {
     return obj;
 }
 
+/* 从 java.io.FileDescriptor 取原始 fd（字段是 private int descriptor）。 */
+static int java_io_get_fd(JNIEnv* env, jobject jfd) {
+    if (jfd == nullptr) return -1;
+    jclass cls = env->GetObjectClass(jfd);
+    if (cls == nullptr) return -1;
+    jfieldID fid = env->GetFieldID(cls, "descriptor", "I");
+    if (fid == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(cls);
+        return -1;
+    }
+    jint fd = env->GetIntField(jfd, fid);
+    env->DeleteLocalRef(cls);
+    return static_cast<int>(fd);
+}
+
+/*
+ * Libcore.os.fstat(FileDescriptor) -> StructStat
+ *
+ * 为什么必须有：FileInputStream 构造时会 fstat 一次拿文件长度与类型
+ * （IoUtils / IoBridge 的校验路径）。不 hook 它，fd 是沙箱里的 fd，
+ * 但 fstat 本身不需要路径，所以不翻译也不会错 —— 真正的问题是
+ * 有些调用方会先 stat 路径再 fstat 交叉验证。
+ * 这里实现它是为了让「返回宿主形态路径」后整条链没有缺口。
+ */
+static jobject hooked_java_linux_fstat(JNIEnv* env, jclass, jobject jfd) {
+    int fd = java_io_get_fd(env, jfd);
+    if (fd < 0) {
+        java_io_throw_errno(env, "fstat", EBADF, "");
+        return nullptr;
+    }
+    g_java_io_fs_total.fetch_add(1);
+
+    struct stat st;
+    int r;
+    do {
+        r = ::fstat(fd, &st);
+    } while (r == -1 && errno == EINTR);
+
+    if (r == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("fstat", "(fd)", err, 0);
+        java_io_throw_errno(env, "fstat", err, "");
+        return nullptr;
+    }
+    jobject obj = java_io_make_struct_stat(env, st);
+    if (obj != nullptr) {
+        LOGI("ufs-alias fstat: fd=%d -> size=%lld mode=0%o", fd,
+             static_cast<long long>(st.st_size),
+             static_cast<unsigned>(st.st_mode & 07777));
+    }
+    return obj;
+}
+
+/*
+ * UnixFileSystem.canonicalize0(String, boolean) -> String
+ *
+ * AOSP: 失败时 JNU_ThrowIOExceptionWithLastError(env, "Bad pathname")，不返回 null。
+ * 这个方法是「返回宿主形态路径」的**前置条件**：
+ * 若不 hook，getCanonicalPath() 会给出真实的沙箱绝对路径（/data/user/0/<宿主>/files/virtual/...），
+ * 比现在的暴露更彻底。
+ */
+static jstring hooked_ufs_canonicalize0(JNIEnv* env, jclass, jstring jpath, jboolean /*ignore*/) {
+    if (jpath == nullptr) return nullptr;
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    if (real.empty()) return jpath;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    char buf[PATH_MAX];
+    const char* got = ::realpath(real.c_str(), buf);
+    if (got == nullptr) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("canonicalize0", real.c_str(), err, 0);
+        java_io_throw_ioexception(env, real.c_str(), err);
+        return nullptr;
+    }
+    LOGI("ufs-alias canonicalize0%s: %s -> %s", translated ? " [xlat]" : "",
+         real.c_str(), buf);
+    return env->NewStringUTF(buf);
+}
+
+
 static jobject hooked_java_linux_stat(JNIEnv* env, jclass, jstring jpath) {
     return java_io_stat_impl(env, jpath, 1);   // 跟随符号链接
 }
@@ -7567,6 +7656,9 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
         {const_cast<char*>("lstat"),
          const_cast<char*>("(Ljava/lang/String;)Landroid/system/StructStat;"),
          reinterpret_cast<void*>(hooked_java_linux_lstat)},
+        {const_cast<char*>("fstat"),
+         const_cast<char*>("(Ljava/io/FileDescriptor;)Landroid/system/StructStat;"),
+         reinterpret_cast<void*>(hooked_java_linux_fstat)},
     };
 
     // 逐个注册：批量 RegisterNatives 是全或无，失败时无法定位是哪个方法/什么异常。
@@ -7621,6 +7713,9 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
                 {const_cast<char*>("setReadOnly0"),
                  const_cast<char*>("(Ljava/io/File;)Z"),
                  reinterpret_cast<void*>(hooked_ufs_setReadOnly0)},
+                {const_cast<char*>("canonicalize0"),
+                 const_cast<char*>("(Ljava/lang/String;Z)Ljava/lang/String;"),
+                 reinterpret_cast<void*>(hooked_ufs_canonicalize0)},
             };
             const int n = static_cast<int>(sizeof(ufsMethods) / sizeof(ufsMethods[0]));
             for (int i = 0; i < n; ++i) {
