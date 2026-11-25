@@ -20,6 +20,8 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.nextvm.core.virtualization.lifecycle.diag.GuestMemoryDump
+import com.nextvm.core.virtualization.lifecycle.diag.MapsSnapshot
+import com.nextvm.core.virtualization.lifecycle.diag.RealSnap
 
 /**
  * VirtualApplicationManager — Manages guest app Application lifecycle.
@@ -3864,75 +3866,10 @@ private fun secNeoLoadProbe(
     // native spoof was suspended), so they cannot say whether the
     // SecNeo payload was ever really mapped. This channel can: it
     // reads the kernel's own view, below both fake layers.
-    class RealSnap(
-        val lines: Int,
-        val execRanges: Set<String>,
-        val anonExecBytes: Long,
-        val bigAnon: List<String>,
-        val dexHelper: List<String>,
-        val memfd: List<String>,
-        val text: String
-    )
-    fun realSnap(): RealSnap? {
-        val text = NativeHookBridge.readRealMaps() ?: return null
-        val ws = Regex("\\s+")
-        var anonBytes = 0L
-        val exec = HashSet<String>()
-        val big = ArrayList<String>()
-        val dex = ArrayList<String>()
-        val memfd = ArrayList<String>()
-        val lines = text.split('\n').filter { it.isNotBlank() }
-        for (ln in lines) {
-            val parts = ln.trim().split(ws, 6)
-            if (parts.size < 2) continue
-            val range = parts[0]
-            val perms = parts[1]
-            val path = if (parts.size >= 6) parts[5].trim() else ""
-            if (ln.contains("DexHelper")) dex.add(ln.trim())
-            if (path.contains("memfd")) memfd.add(ln.trim())
-            if (!perms.contains('x')) continue
-            exec.add(range)
-            if (path.isNotEmpty()) continue
-            val se = range.split("-")
-            if (se.size != 2) continue
-            val start = se[0].toLongOrNull(16) ?: continue
-            val end = se[1].toLongOrNull(16) ?: continue
-            val sz = end - start
-            anonBytes += sz
-            if (sz in 0x80000L..0x200000L) {
-                big.add("0x" + sz.toString(16) + "/" + perms + "@" + range)
-            }
-        }
-        return RealSnap(lines.size, exec, anonBytes, big, dex, memfd, text)
-    }
+    fun realSnap(): RealSnap? =
+        NativeHookBridge.readRealMaps()?.let(MapsSnapshot::parse)
     fun logRealSnap(tag: String, snap: RealSnap?, prev: RealSnap?) {
-        if (snap == null) {
-            GuestBreadcrumb.log("v59 realmaps $tag UNAVAILABLE")
-            return
-        }
-        val newBig = if (prev != null) {
-            snap.bigAnon.filter { b ->
-                prev.bigAnon.none {
-                    it.substringAfter('@') == b.substringAfter('@')
-                }
-            }
-        } else {
-            snap.bigAnon
-        }
-        val newExec = if (prev != null) {
-            (snap.execRanges - prev.execRanges).size
-        } else {
-            snap.execRanges.size
-        }
-        GuestBreadcrumb.log(
-            "v59 realmaps " + tag + " lines=" + snap.lines +
-                " anonExecBytes=0x" + snap.anonExecBytes.toString(16) +
-                " newExecRanges=" + newExec +
-                " bigAnon=" + snap.bigAnon +
-                " newBigAnon=" + newBig +
-                " dexHelper=" + snap.dexHelper +
-                " memfd=" + snap.memfd
-        )
+        GuestBreadcrumb.log(MapsSnapshot.formatLine(tag, snap, prev))
     }
     var realBefore: RealSnap? = null
     var realAfter: RealSnap? = null
@@ -3941,13 +3878,9 @@ private fun secNeoLoadProbe(
         val dir = v59DataDir ?: return
         val s = snap ?: return
         try {
-            val f = java.io.File(
-                java.io.File(dir, "files"),
-                "realmaps-" + android.os.Process.myPid() + "-" + tag + ".txt"
-            )
-            f.writeText(s.text)
+            val name = MapsSnapshot.dump(java.io.File(dir, "files"), android.os.Process.myPid(), tag, s)
             GuestBreadcrumb.log(
-                "v59 realmaps dump " + tag + " -> " + f.name +
+                "v59 realmaps dump " + tag + " -> " + name +
                     " bytes=" + s.text.length
             )
         } catch (t: Throwable) {
