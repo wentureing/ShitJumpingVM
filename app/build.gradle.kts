@@ -1,3 +1,9 @@
+// Gradle Kotlin DSL 里不能写 java.util.Properties / java.io.File ——
+// `java` 会被优先解析成 Gradle 的 JavaPluginExtension（java { } 块），
+// 于是 java.util 报 Unresolved reference: util。必须在顶部 import + alias。
+import java.io.File as JavaFile
+import java.util.Properties as JavaProperties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -25,7 +31,7 @@ android {
     // 原项目没有 signingConfigs：AGP 每次构建都用 ~/.android/debug.keystore
     // （CI 里每次新生成）-> 签名漂移 -> adb install -r 必失败 -> 卸载重装
     // -> 丢 appops 授权 + 丢所有沙箱数据。这里显式声明，storeFile 用绝对路径。
-    val signingProps = java.util.Properties()
+    val signingProps = JavaProperties()
     run {
         val f = rootProject.file("local.properties")
         if (f.exists()) f.inputStream().use { signingProps.load(it) }
@@ -35,7 +41,7 @@ android {
     val ksAlias: String? = System.getenv("STORE_ALIAS") ?: signingProps.getProperty("STORE_ALIAS")
     val ksKeyPwd: String? = System.getenv("KEY_PASSWORD") ?: signingProps.getProperty("KEY_PASSWORD")
     val hasFixedKeystore: Boolean =
-        ksStore != null && java.io.File(ksStore).exists() && ksStorePwd != null
+        ksStore != null && JavaFile(ksStore).exists() && ksStorePwd != null
     logger.lifecycle(
         "[signing] fixed keystore = " + (if (hasFixedKeystore) "$ksStore (exists)" else "NOT FOUND")
     )
@@ -43,7 +49,7 @@ android {
     signingConfigs {
         if (hasFixedKeystore) {
             create("fixedDebug") {
-                storeFile = file(ksStore!!)
+                storeFile = JavaFile(ksStore!!)
                 storePassword = ksStorePwd
                 keyAlias = ksAlias ?: "androiddebugkey"
                 keyPassword = ksKeyPwd ?: ksStorePwd
