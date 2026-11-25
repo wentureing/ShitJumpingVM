@@ -58,12 +58,23 @@ dependencies {
 // 用类型化 TestListener：`afterTest { desc, result -> }` 是 Groovy Closure API，Kotlin DSL 无法推断参数类型。
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     addTestListener(object : org.gradle.api.tasks.testing.TestListener {
-        override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+        // 卡住定位：beforeSuite/beforeTest 先打点，卡死时日志里会出现
+        // "有 TESTSTART 但没有对应 TESTTIME" 的那一项。
+        override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) {
+            println("TESTSUITE ${suite.className}")
+        }
+
         override fun afterSuite(
             suite: org.gradle.api.tasks.testing.TestDescriptor,
             result: org.gradle.api.tasks.testing.TestResult,
-        ) = Unit
-        override fun beforeTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+        ) {
+            println("TESTSUITE-END ${suite.className} ${result.resultType}")
+        }
+
+        override fun beforeTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor) {
+            println("TESTSTART ${testDescriptor.className}#${testDescriptor.displayName}")
+        }
+
         override fun afterTest(
             testDescriptor: org.gradle.api.tasks.testing.TestDescriptor,
             result: org.gradle.api.tasks.testing.TestResult,
