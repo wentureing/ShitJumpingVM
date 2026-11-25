@@ -1,0 +1,40 @@
+package com.nextvm.core.common.diagnostics
+
+import java.io.File
+
+/**
+ * 诊断文件名与目录的**唯一规范**（代码侧）。探针（独立 APK）按同样规则扫描，见 KDoc。
+ *
+ * 规则：
+ * - 全部落在 `<filesDir>` 下，平铺，不建子目录；
+ * - 带进程区分的文件用 `-<pid>.log` 后缀（breadcrumb / stackdump / hijacktrace / webviewwarm / webviewwatch）；
+ * - 固定名通道：`debug-trace.log`、`checks.log`、`seccomp-diag.log`、各 `v1xx-*-probe.log`。
+ *
+ * 探针侧对应实现：`probe/src/main/java/com/sandbox/probe/ProbeRunner.java` 的 D 系列（按同规则匹配）。
+ */
+object DiagFiles {
+
+    const val DEBUG_TRACE = "debug-trace.log"
+    const val CHECKS = "checks.log"
+    const val SECCOMP_DIAG = "seccomp-diag.log"
+
+    fun breadcrumb(pid: Int): String = "breadcrumb-$pid.log"
+    fun stackDump(pid: Int): String = "stackdump-$pid.log"
+    fun hijackTrace(pid: Int): String = "hijacktrace-$pid.log"
+    fun startActivityTrace(pid: Int): String = "startactivity-trace-$pid.log"
+    fun webViewWarm(pid: Int): String = "webviewwarm-$pid.log"
+    fun webViewWatch(pid: Int): String = "webviewwatch-$pid.log"
+
+    /** 扫 `<filesDir>` 下所有诊断文件（按名字排序）。 */
+    fun list(filesDir: File): List<File> = try {
+        filesDir.listFiles()
+            ?.filter { it.isFile && (it.name.endsWith(".log") || it.name.endsWith(".dex")) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+    } catch (_: Throwable) {
+        emptyList()
+    }
+
+    /** 诊断文件总大小（字节），用于判断"是否爆盘"。 */
+    fun totalBytes(filesDir: File): Long = list(filesDir).sumOf { it.length() }
+}
