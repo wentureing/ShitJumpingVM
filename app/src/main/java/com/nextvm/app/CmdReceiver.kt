@@ -249,6 +249,15 @@ class CmdReceiver : BroadcastReceiver() {
                 list.forEach { Log.i(TAG, "SPOOF_EXEMPT pkg=$it") }
             }
 
+            ACTION_SELF_CHECK -> {
+                val line = try {
+                    engine.selfCheck()
+                } catch (t: Throwable) {
+                    "hookcheck failed ${t.javaClass.simpleName}: ${t.message}"
+                }
+                Log.i(TAG, "SELF_CHECK -> $line")
+            }
+
             else -> Log.w(TAG, "unknown action: $action")
         }
     }
@@ -303,5 +312,9 @@ class CmdReceiver : BroadcastReceiver() {
         const val ACTION_SPOOF_EXEMPT_ADD = "com.nextvm.cmd.SPOOF_EXEMPT_ADD"
         const val ACTION_SPOOF_EXEMPT_REMOVE = "com.nextvm.cmd.SPOOF_EXEMPT_REMOVE"
         const val ACTION_SPOOF_EXEMPT_LIST = "com.nextvm.cmd.SPOOF_EXEMPT_LIST"
+
+        // --- 容器自检（2026-11-25）---
+        // 主动执行：临时规则命中/移除、写入落沙箱、未知路径不误改、诊断通道可写、配置可读
+        const val ACTION_SELF_CHECK = "com.nextvm.cmd.SELF_CHECK"
     }
 }

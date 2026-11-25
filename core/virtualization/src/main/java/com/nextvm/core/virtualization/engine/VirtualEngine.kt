@@ -12,6 +12,11 @@ import com.nextvm.core.binder.proxy.ActivityBinderWrap
 import com.nextvm.core.binder.proxy.ContentResolverProxy
 import com.nextvm.core.binder.proxy.SystemServiceProxyManager
 import com.nextvm.core.common.AndroidCompat
+import com.nextvm.core.common.DebugFlags
+import com.nextvm.core.common.diagnostics.DiagChannel
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.virtualization.diag.ContainerSelfCheck
+import com.nextvm.core.virtualization.diag.PathProbe
 import com.nextvm.core.framework.parsing.FrameworkApkParser
 import com.nextvm.core.framework.parsing.FullPackageInfo
 import com.nextvm.core.hook.AntiDetectionEngine
@@ -150,6 +155,46 @@ class VirtualEngine @Inject constructor(
      * ActivityManager singleton. Hidden-API bypass runs first inside
      * installActivityThreadHookEarly; this is called right after it.
      */
+    /**
+     * 容器自检：主动验证路径重定向、写入隔离、诊断通道与配置。
+     * 由 CmdReceiver 的 SELF_CHECK 触发，返回一行 hookcheck 汇总。
+     */
+    fun selfCheck(): String {
+        val root = if (::virtualRoot.isInitialized) {
+            virtualRoot
+        } else {
+            java.io.File(context.filesDir, VirtualConstants.VIRTUAL_DIR)
+        }
+        val conf = java.io.File(context.filesDir, "path_spoof.conf")
+        val diag = if (DebugFlags.isDebugBuild()) {
+            java.io.File(context.filesDir, DiagFiles.DEBUG_TRACE)
+        } else {
+            null
+        }
+        val probe = object : PathProbe {
+            override fun add(fromPrefix: String, toPrefix: String) =
+                nativeHookBridge.addPathRedirection(fromPrefix, toPrefix)
+            override fun remove(fromPrefix: String) =
+                nativeHookBridge.removePathRedirection(fromPrefix)
+            override fun translate(path: String) = nativeHookBridge.translatePath(path)
+            override fun redirectionCount() = nativeHookBridge.getRedirectionCount()
+            override fun nativeAvailable() = nativeHookBridge.isNativeAvailable()
+        }
+        val checker = ContainerSelfCheck(
+            paths = probe,
+            sandboxRoot = root,
+            confText = if (conf.exists()) runCatching { conf.readText() }.getOrNull() else null,
+            diagFile = diag,
+        )
+        val checks = checker.run()
+        val line = checker.report(checks)
+        runCatching {
+            DiagChannel(java.io.File(context.filesDir, DiagFiles.CHECKS))
+                .append("S selfcheck $line\n")
+        }
+        return line
+    }
+
     fun installActivityBinderWrapEarly(context: Context) {
         ActivityBinderWrap.install(context)
     }

@@ -20,7 +20,9 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.nextvm.core.virtualization.lifecycle.diag.GuestMemoryDump
+import com.nextvm.core.virtualization.lifecycle.diag.InitTrace
 import com.nextvm.core.virtualization.lifecycle.diag.MapsSnapshot
+import com.nextvm.core.virtualization.lifecycle.diag.PluginProbes
 import com.nextvm.core.virtualization.lifecycle.diag.RealSnap
 
 /**
@@ -68,323 +70,6 @@ private fun dumpV148ConnectProbe() {
     }
 }
 
-/**
- * v155: init-time trace, started once per process at bind entry.
- * v153 tried Debug.startMethodTracingSampling(path, 64MB, 1000us)
- * with a 90s window — and FROZE the guest in all three test
- * sessions (2026-11-06: main thread stuck 7-9s in File.exists /
- * Gson.toJson / ConstraintLayout, 5 system ANRs, 0-byte trace
- * files; the 1ms sampler suspends every thread 1000x/sec to walk
- * stacks). Reverted to v151's proven config: full tracing,
- * Debug.startMethodTracing(path, 64MB), 20s window. The 64MB
- * buffer fills during the init burst (as in v151/v152), so the
- * effective window is the init burst — the 90s ambition is
- * dropped; a 256MB buffer stays a deferred fallback. After stop,
- * a background filter pass extracts only device-identity method
- * entries (risk SDK, Telephony, Settings, Wifi/Location,
- * DeviceInfoUtils/key-info, package info, plus the bridge
- * failure chain) into v155-init-filtered.log; the same pass runs
- * on the v134 click trace (v155-click-filtered.log). Trace
- * format (ART SLOW v3, same as the v134 files): text header with
- * a *methods section of "hexId<TAB>class<TAB>method" lines up to
- * "*end", then "SLOW" + 14-byte records <u16 tid, u32 mid,
- * u32 t1, u32 t2>; low bit of mid is the exit flag, base id is
- * mid & ~3. Names are class + "." + method. Full traces keep
- * ENTER records only.
- */
-@Volatile
-private var v155InitTraceStarted = false
-
-@Volatile
-private var v155InitTraceStoppedByClick = false
-
-// v156: login-page load trace (LoginActivity first resume,
-// once per process). The init trace only covers the
-// Application burst — 9626's init table has 1,693 methods
-// and no LoginActivity at all — so the load window was
-// never method-traced. 256MB buffer (the deferred fallback
-// from v151/v154), 20s window, same filter pass.
-@Volatile
-private var v156LoadTraceStarted = false
-
-@Volatile
-private var v156LoadTraceStoppedByClick = false
-
-@Volatile
-private var v156LoadTraceFiltered = false
-
-/**
- * v155: stop-before-start for the click traces (kept from v153,
- * which never fired in the frozen sessions — exonerated). If a
- * trace is active (the init trace's 20s timer has not fired
- * yet), stop it first — a second startMethodTracing while
- * tracing is active is a silent no-op on this device (v152's
- * click trace came back 0 bytes), so the click trace must clear
- * the way. On a successful stop, set the flag (the init 20s
- * stop then skips itself) and run the init filter on the
- * finalized init trace file. On failure (nothing was tracing)
- * just log it — that tells us whether a trace was active at
- * click time.
- */
-private fun v155StopBeforeStart(dir: java.io.File, tag: String) {
-    try {
-        android.os.Debug.stopMethodTracing()
-        GuestBreadcrumb.log("$tag stop-before-start")
-        v155InitTraceStoppedByClick = true
-        // v156: if the load trace was the active one, the
-        // click stopped it too — its delayed stop must skip
-        // itself and its filter must run here, or the load
-        // trace file is never filtered.
-        if (v156LoadTraceStarted) {
-            v156LoadTraceStoppedByClick = true
-        }
-        val initFile = java.io.File(
-            dir, "v155-trace-" + android.os.Process.myPid() + "-1.trace"
-        )
-        Thread({
-            filterV154Trace(initFile, dir)
-        }, "v155-trace-filter").start()
-        if (v156LoadTraceStarted && !v156LoadTraceFiltered) {
-            v156LoadTraceFiltered = true
-            val loadFile = java.io.File(
-                dir,
-                "v156-load-trace-" + android.os.Process.myPid() +
-                    "-1.trace"
-            )
-            Thread({
-                filterV154Trace(
-                    loadFile, dir,
-                    "v156-load-filtered.log", "v156-load"
-                )
-            }, "v156-load-filter").start()
-        }
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "$tag stop-before-start none " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
-
-private fun startV154InitTrace() {
-    if (v155InitTraceStarted) return
-    try {
-        val dir = GuestBreadcrumb.filesDir() ?: return
-        v155InitTraceStarted = true
-        val traceFile = java.io.File(
-            dir, "v155-trace-" + android.os.Process.myPid() + "-1.trace"
-        )
-        android.os.Debug.startMethodTracing(
-            traceFile.absolutePath, 64 * 1024 * 1024
-        )
-        GuestBreadcrumb.log("v155-trace start file=" + traceFile.name)
-        android.os.Handler(
-            android.os.Looper.getMainLooper()
-        ).postDelayed({
-            if (v155InitTraceStoppedByClick) {
-                GuestBreadcrumb.log(
-                    "v155-trace stop skipped already stopped by click"
-                )
-            } else {
-                try {
-                    android.os.Debug.stopMethodTracing()
-                    GuestBreadcrumb.log(
-                        "v155-trace stop delayed file=" + traceFile.name
-                    )
-                } catch (e: Throwable) {
-                    GuestBreadcrumb.log(
-                        "v155-trace stop failed " +
-                            "${e.javaClass.simpleName}: " + e.message
-                    )
-                }
-                Thread({
-                    filterV154Trace(traceFile, dir)
-                }, "v155-trace-filter").start()
-            }
-        }, 20000L)
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "v155-trace start failed " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
-
-private fun startV156LoadTrace() {
-    if (v156LoadTraceStarted) return
-    try {
-        val dir = GuestBreadcrumb.filesDir() ?: return
-        // Stop the init trace first (its 20s timer has not
-        // fired yet at first LoginActivity resume); a second
-        // start while tracing is a silent no-op (v152). The
-        // started flag is set AFTER this call so the
-        // stop-before-start does not mark the load trace
-        // itself as stopped-by-click before it starts.
-        v155StopBeforeStart(dir, "v156-load")
-        v156LoadTraceStarted = true
-        val traceFile = java.io.File(
-            dir,
-            "v156-load-trace-" + android.os.Process.myPid() + "-1.trace"
-        )
-        android.os.Debug.startMethodTracing(
-            traceFile.absolutePath, 256 * 1024 * 1024
-        )
-        GuestBreadcrumb.log("v156-load-trace start file=" + traceFile.name)
-        android.os.Handler(
-            android.os.Looper.getMainLooper()
-        ).postDelayed({
-            if (v156LoadTraceStoppedByClick) {
-                GuestBreadcrumb.log(
-                    "v156-load-trace stop skipped already stopped by click"
-                )
-            } else {
-                try {
-                    android.os.Debug.stopMethodTracing()
-                    GuestBreadcrumb.log(
-                        "v156-load-trace stop delayed file=" + traceFile.name
-                    )
-                } catch (e: Throwable) {
-                    GuestBreadcrumb.log(
-                        "v156-load-trace stop failed " +
-                            "${e.javaClass.simpleName}: " + e.message
-                    )
-                }
-                if (!v156LoadTraceFiltered) {
-                    v156LoadTraceFiltered = true
-                    Thread({
-                        filterV154Trace(
-                            traceFile, dir,
-                            "v156-load-filtered.log", "v156-load"
-                        )
-                    }, "v156-load-filter").start()
-                }
-            }
-        }, 20000L)
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "v156-load-trace start failed " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
-
-private fun filterV154Trace(
-    traceFile: java.io.File, dir: java.io.File,
-    outName: String = "v155-init-filtered.log",
-    tag: String = "v155",
-    sampled: Boolean = false
-) {
-    try {
-        val data = traceFile.readBytes()
-        // Find "*end\n" terminating the text header.
-        var textEnd = -1
-        var i = 0
-        while (i + 4 < data.size) {
-            if (data[i] == '*'.code.toByte() &&
-                data[i + 1] == 'e'.code.toByte() &&
-                data[i + 2] == 'n'.code.toByte() &&
-                data[i + 3] == 'd'.code.toByte() &&
-                data[i + 4] == '\n'.code.toByte()
-            ) {
-                textEnd = i
-                break
-            }
-            i++
-        }
-        if (textEnd < 0) {
-            GuestBreadcrumb.log("$tag-filter failed no *end")
-            return
-        }
-        val methods = HashMap<Int, String>()
-        var inMethods = false
-        val text = String(data, 0, textEnd, Charsets.UTF_8)
-        for (line in text.split("\n")) {
-            if (line == "*methods") {
-                inMethods = true
-                continue
-            }
-            if (line.startsWith("*")) {
-                inMethods = false
-                continue
-            }
-            if (inMethods) {
-                val parts = line.split("\t")
-                if (parts.size >= 3) {
-                    val id = try {
-                        parts[0].removePrefix("0x").toLong(16).toInt()
-                    } catch (_: Throwable) {
-                        continue
-                    }
-                    methods[id] = parts[1] + "." + parts[2]
-                }
-            }
-        }
-        val blobOff = textEnd + 5
-        if (blobOff + 32 > data.size ||
-            data[blobOff] != 'S'.code.toByte() ||
-            data[blobOff + 1] != 'L'.code.toByte() ||
-            data[blobOff + 2] != 'O'.code.toByte() ||
-            data[blobOff + 3] != 'W'.code.toByte()
-        ) {
-            GuestBreadcrumb.log("$tag-filter failed no SLOW")
-            return
-        }
-        fun u32(off: Int): Int {
-            return (data[off].toInt() and 0xFF) or
-                ((data[off + 1].toInt() and 0xFF) shl 8) or
-                ((data[off + 2].toInt() and 0xFF) shl 16) or
-                ((data[off + 3].toInt() and 0xFF) shl 24)
-        }
-        val recSize = u32(blobOff + 16)
-        if (recSize < 14) {
-            GuestBreadcrumb.log("$tag-filter failed recSize=$recSize")
-            return
-        }
-        val keys = arrayOf(
-            "zw/mobile/risk", "TelephonyManager",
-            "Settings\$Secure", "WifiManager", "LocationManager",
-            "DeviceInfoUtils", "RequestForBridge",
-            "getPackageInfo", "getPackageManager", "android.os.Build",
-            "ResponseProcess", "ErrorForBridge", "callBackError",
-            "onHttpFailure", "onHttpSuccess"
-        )
-        val out = java.io.File(dir, outName)
-        var total = 0
-        var matched = 0
-        out.bufferedWriter().use { w ->
-            var off = blobOff + 32
-            while (off + recSize <= data.size) {
-                total++
-                val tid = (data[off].toInt() and 0xFF) or
-                    ((data[off + 1].toInt() and 0xFF) shl 8)
-                val mid = u32(off + 2)
-                val t2 = u32(off + 10)
-                off += recSize
-                if (!sampled && mid and 1 != 0) continue
-                val name = methods[mid and -4] ?: continue
-                var hit = false
-                for (k in keys) {
-                    if (name.contains(k)) {
-                        hit = true
-                        break
-                    }
-                }
-                if (!hit) continue
-                matched++
-                w.write("t2=$t2 tid=$tid $name\n")
-            }
-        }
-        GuestBreadcrumb.log(
-            "$tag-filter done matched=$matched total=$total " +
-                "file=" + out.name + " traceBytes=" + data.size
-        )
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "$tag-filter failed " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
 
 class VirtualApplicationManager @Inject constructor(
     private val resourceManager: VirtualResourceManager,
@@ -512,7 +197,7 @@ class VirtualApplicationManager @Inject constructor(
         // pulled. The full trace stays on-device as backup. A
         // failed start/stop/filter never touches the bind.
         if (packageName == "com.greenpoint.android.mc10086.activity") {
-            startV154InitTrace()
+            InitTrace.startInit()
         }
 
         var legacyPrevInstr: Instrumentation? = null
@@ -635,7 +320,7 @@ class VirtualApplicationManager @Inject constructor(
 
             // Step 6: Call Application.onCreate()
             callApplicationOnCreate(application)
-            probePluginLoaderState(application, record)
+            PluginProbes.probePluginLoaderState(application, record)
             record.state = ApplicationState.RUNNING
             Timber.tag(TAG).i("Application.onCreate() complete for $packageName")
             restoreInstrumentation(legacyPrevInstr)
@@ -818,7 +503,7 @@ class VirtualApplicationManager @Inject constructor(
                             val rec = applications.values.firstOrNull {
                                 it.application === app
                             }
-                            probePluginStatePhase(app, rec, "firstActivity")
+                            PluginProbes.probePluginStatePhase(app, rec, "firstActivity")
                         }
                     }
 
@@ -836,7 +521,7 @@ class VirtualApplicationManager @Inject constructor(
                         if (a.javaClass.name ==
                             "com.cmccit.loginmodule.ac.LoginActivity"
                         ) {
-                            startV156LoadTrace()
+                            InitTrace.startLoad()
                         }
                         // v124: every resume re-checks the login button
                         // (fragment tab switches do not resume a new
@@ -1719,7 +1404,7 @@ class VirtualApplicationManager @Inject constructor(
             }
 
             callApplicationOnCreate(application)
-            probePluginLoaderState(application, record)
+            PluginProbes.probePluginLoaderState(application, record)
             record.state = ApplicationState.RUNNING
             Timber.tag(TAG).i(
                 "Framework LoadedApk bind complete for $packageName " +
@@ -2264,438 +1949,6 @@ class VirtualApplicationManager @Inject constructor(
      * Mirrors:
      *   Instrumentation.callApplicationOnCreate(app) in ActivityThread.handleBindApplication()
      */
-    /**
-     * v116 probe (read-only, never initializes anything itself):
-     * after Application.onCreate, check whether the guest plugin
-     * framework (com.mc10086.plugin.core.PluginLoader) is
-     * initialized, and whether PluginManagerProvider survived
-     * provider installation. Decides between "never initialized",
-     * "initialized late but provider unregistered", and
-     * "initialized, login must die elsewhere".
-     *
-     * Deliberately does NOT call initLoader: invoking it would
-     * change the state being measured. getApplication() is a
-     * pure getter (returns the app or throws the same
-     * IllegalStateException the provider hit). All reflection
-     * is wrapped so a probe failure can never disturb bind.
-     */
-    private fun probePluginLoaderState(
-        application: Application,
-        record: ApplicationRecord
-    ) {
-        try {
-            val providerRegistered = record.contentProviders.any {
-                it.javaClass.name.contains("PluginManagerProvider")
-            }
-            GuestBreadcrumb.log(
-                "v116-plugin-probe PluginManagerProvider registered=" +
-                    "$providerRegistered (contentProviders=${record.contentProviders.size})"
-            )
-            val loaderCls = try {
-                Class.forName(
-                    "com.mc10086.plugin.core.PluginLoader",
-                    false,
-                    application.classLoader
-                )
-            } catch (e: Throwable) {
-                GuestBreadcrumb.log(
-                    "v116-plugin-probe PluginLoader class not found: " +
-                        "${e.javaClass.simpleName}"
-                )
-                return
-            }
-            val hasInitLoader = loaderCls.methods.any { it.name == "initLoader" } ||
-                loaderCls.declaredMethods.any { it.name == "initLoader" }
-            // v117 probe (read-only, still never calls initLoader):
-            // record the full signatures so the next step can judge
-            // whether the engine could call it at the right point
-            // with the right arguments. Signatures only, no invocation.
-            val initLoaderSigs = (loaderCls.methods + loaderCls.declaredMethods)
-                .filter { it.name == "initLoader" }
-                .distinctBy { it.toString() }
-                .joinToString(" | ") { m ->
-                    java.lang.reflect.Modifier.toString(m.modifiers) +
-                        " " + m.returnType.name + "(" +
-                        m.parameterTypes.joinToString(",") { it.name } + ")"
-                }
-                .ifEmpty { "none" }
-            GuestBreadcrumb.log(
-                "v117-plugin-probe initLoader signatures=$initLoaderSigs"
-            )
-            val getApp = try {
-                loaderCls.getMethod("getApplication")
-            } catch (_: Throwable) {
-                loaderCls.declaredMethods.firstOrNull { it.name == "getApplication" }
-            }
-            if (getApp == null) {
-                GuestBreadcrumb.log(
-                    "v116-plugin-probe initLoader present=$hasInitLoader, " +
-                        "getApplication method not found"
-                )
-                return
-            }
-            getApp.isAccessible = true
-            val state = try {
-                val app = if (java.lang.reflect.Modifier.isStatic(getApp.modifiers)) {
-                    getApp.invoke(null)
-                } else {
-                    "getApplication is not static, skipped"
-                }
-                if (app is Application) {
-                    "INITIALIZED (application=${app.javaClass.name})"
-                } else {
-                    "NOT_INITIALIZED (returned=$app)"
-                }
-            } catch (e: Throwable) {
-                val cause = (e as? java.lang.reflect.InvocationTargetException)?.cause ?: e
-                "NOT_INITIALIZED (${cause.javaClass.simpleName}: ${cause.message})"
-            }
-            GuestBreadcrumb.log(
-                "v116-plugin-probe initLoader present=$hasInitLoader, " +
-                    "getApplication state=$state"
-            )
-            // v123 probe (read-only): list PluginLoader's static
-            // fields (names + values) at onCreate end. getApplication
-            // throwing only says the flag is unset; the fields say
-            // WHY: all-initial values = initLoader was never called;
-            // a stored Application reference with an unset flag (or
-            // any half-set state) = it was called but failed midway.
-            // Values are rendered by type only (class name for
-            // objects, never toString) so reading them cannot run
-            // guest code. The class is already initialized (its
-            // methods ran above), so field reads initialize nothing
-            // new.
-            try {
-                val seen = HashSet<String>()
-                val parts = ArrayList<String>()
-                var c: Class<*>? = loaderCls
-                while (c != null && c != Any::class.java) {
-                    for (f in c.declaredFields) {
-                        if (!java.lang.reflect.Modifier.isStatic(
-                                f.modifiers
-                            )
-                        ) continue
-                        if (!seen.add(f.name)) continue
-                        val v = try {
-                            f.isAccessible = true
-                            f.get(null)
-                        } catch (e: Throwable) {
-                            "read-failed:${e.javaClass.simpleName}"
-                        }
-                        val rendered = when (v) {
-                            null -> "null"
-                            is Application -> "Application(${v.javaClass.name})"
-                            is Boolean, is Number, is String -> v.toString()
-                            is Array<*> -> "Array(len=${v.size})"
-                            else -> "obj(${(v as Any).javaClass.name})"
-                        }
-                        parts.add("${f.name}=$rendered")
-                    }
-                    c = c.superclass
-                }
-                GuestBreadcrumb.log(
-                    "v123-plugin-probe PluginLoader static fields: " +
-                        parts.joinToString(", ").ifEmpty { "none" }
-                )
-            } catch (_: Throwable) {
-                GuestBreadcrumb.log(
-                    "v123-plugin-probe static fields read failed"
-                )
-            }
-            // v118 probe (read-only): App Startup discovery check.
-            // InitializationProvider installed ok BEFORE
-            // PluginManagerProvider, so if the plugin init were an
-            // App Startup initializer, its entry would be an
-            // application meta-data key with value "androidx.startup".
-            // Listing those keys decides "not an App Startup path"
-            // vs "discovery lost the entry in the guest" — no dex
-            // needed. metaData null itself is a finding (discovery
-            // would find nothing).
-            try {
-                val md = application.applicationInfo?.metaData
-                if (md == null) {
-                    GuestBreadcrumb.log("v118-plugin-probe app metaData=null")
-                } else {
-                    val startups = ArrayList<String>()
-                    val pluginKeys = ArrayList<String>()
-                    for (k in md.keySet()) {
-                        val v = try {
-                            md.get(k)?.toString()
-                        } catch (_: Throwable) {
-                            null
-                        }
-                        if (v == "androidx.startup") startups.add(k)
-                        if (k.contains("plugin", ignoreCase = true)) pluginKeys.add(k)
-                    }
-                    GuestBreadcrumb.log(
-                        "v118-plugin-probe startup initializers=" +
-                            startups.joinToString(",").ifEmpty { "none" }
-                    )
-                    GuestBreadcrumb.log(
-                        "v118-plugin-probe plugin meta keys=" +
-                            pluginKeys.joinToString(",").ifEmpty { "none" } +
-                            " (metaData keys=${md.size()})"
-                    )
-                }
-            } catch (_: Throwable) {
-                GuestBreadcrumb.log("v118-plugin-probe app metaData read failed")
-            }
-            // v119 probe (read-only): replicate EXACTLY what
-            // AppInitializer.discoverAndInitialize sees. It does
-            // NOT read application-level meta-data; it calls
-            // getProviderInfo(InitializationProvider, GET_META_DATA)
-            // and reads that ProviderInfo's nested <meta-data>.
-            // Logging what the guest's own PackageManager returns
-            // for that lookup decides whether App Startup discovery
-            // in the guest finds any initializers at all, and
-            // whether the break is in the PM path or in the
-            // provider meta-data fill. Also compare the PM-route
-            // ApplicationInfo meta-data against the bound one
-            // (v118: bound is null) to locate where app-level
-            // meta-data is lost on the framework path.
-            try {
-                val cn = android.content.ComponentName(
-                    application.packageName,
-                    "androidx.startup.InitializationProvider"
-                )
-                val pi = application.packageManager.getProviderInfo(
-                    cn,
-                    android.content.pm.PackageManager.GET_META_DATA
-                )
-                val pmd = pi?.metaData
-                if (pmd == null) {
-                    GuestBreadcrumb.log(
-                        "v119-plugin-probe startup providerInfo metaData=null " +
-                            "(providerInfo found, authority=${pi?.authority})"
-                    )
-                } else {
-                    val keys = ArrayList<String>()
-                    for (k in pmd.keySet()) {
-                        val v = try {
-                            pmd.get(k)?.toString()
-                        } catch (_: Throwable) {
-                            "?"
-                        }
-                        keys.add("$k=$v")
-                    }
-                    GuestBreadcrumb.log(
-                        "v119-plugin-probe startup provider metaData keys=" +
-                            keys.joinToString(",").ifEmpty { "none" } +
-                            " (n=${pmd.size()})"
-                    )
-                }
-            } catch (e: Throwable) {
-                GuestBreadcrumb.log(
-                    "v119-plugin-probe startup getProviderInfo FAILED: " +
-                        "${e.javaClass.simpleName}: ${e.message}"
-                )
-            }
-            // v120 probe (read-only): timed re-checks for lazy init.
-            // Covers the H2/lazy-init branch left open by v118/v119:
-            // if the framework initializes on first use (e.g. a login
-            // tap), a later check flips to INITIALIZED and the generic
-            // provider retry regains meaning; if all three stay
-            // NOT_INITIALIZED, lazy init does not exist in this window
-            // either. Main-looper delayed posts only, reusing the
-            // v118 phase probe; if the process dies first, the checks
-            // simply never run. Scheduled once per bind, at onCreate
-            // end, so t30s/t60s/t120s are ~30/60/120s after onCreate.
-            try {
-                val handler = android.os.Handler(
-                    android.os.Looper.getMainLooper()
-                )
-                val delays = listOf(
-                    30_000L to "t30s",
-                    60_000L to "t60s",
-                    120_000L to "t120s"
-                )
-                for ((delay, phase) in delays) {
-                    handler.postDelayed({
-                        try {
-                            probePluginStatePhase(application, record, phase)
-                        } catch (_: Throwable) {
-                        }
-                    }, delay)
-                }
-                GuestBreadcrumb.log(
-                    "v120-plugin-probe timed re-checks scheduled t30s/t60s/t120s"
-                )
-            } catch (_: Throwable) {
-                GuestBreadcrumb.log("v120-plugin-probe schedule failed")
-            }
-            // v121 probe (read-only): AW delegate state + in-memory
-            // dex dump. The on-disk dex holds only the SecNeo shell
-            // (7 classes, no initLoader); the real dex lives only in
-            // ART anonymous memory, so the caller search needs the
-            // bytes from this process itself. Runs only for the
-            // SecNeo shell Application (AW); other guests skip it.
-            // The dex scan runs on a background thread so it can
-            // never stall bind; the AW state check is synchronous
-            // and cheap. Nothing here calls initLoader or changes
-            // any guest state.
-            // v122 correction: v121 read static field "a", which is
-            // the shell's own self-reference (attachBaseContext does
-            // sput this -> AW.a), NOT the delegate. The delegate is
-            // static field "realApplication". v122 reads BOTH so a
-            // future misread is visible in the same line: "a" must
-            // come back as AW itself, "realApplication" is the actual
-            // question (null = delegate never created in guest).
-            try {
-                if (application.javaClass.name ==
-                    "com.secneo.apkwrapper.AW"
-                ) {
-                    val readStaticApp = { name: String ->
-                        try {
-                            val f = findField(application.javaClass, name)
-                            f?.isAccessible = true
-                            f?.get(null)
-                        } catch (_: Throwable) {
-                            "field-read-failed"
-                        }
-                    }
-                    val aApp = readStaticApp("a")
-                    val aDesc = when (aApp) {
-                        null -> "null"
-                        is Application -> aApp.javaClass.name
-                        else -> "unexpected=$aApp"
-                    }
-                    val realApp = readStaticApp("realApplication")
-                    val realDesc = when (realApp) {
-                        null -> "null (delegate never created)"
-                        is Application -> {
-                            val base = try {
-                                realApp.baseContext
-                            } catch (_: Throwable) {
-                                null
-                            }
-                            "class=${realApp.javaClass.name} " +
-                                "baseContext=" + if (base == null) {
-                                    "null (attachBaseContext never ran)"
-                                } else {
-                                    "attached (${base.javaClass.name})"
-                                }
-                        }
-                        else -> "unexpected=$realApp"
-                    }
-                    GuestBreadcrumb.log(
-                        "v122-plugin-probe AW a=$aDesc " +
-                            "realApplication: $realDesc"
-                    )
-                    Thread({
-                        try {
-                            GuestMemoryDump.dumpMemoryDex(application)
-                        } catch (_: Throwable) {
-                            GuestBreadcrumb.log(
-                                "v121-plugin-probe memdex dump failed"
-                            )
-                        }
-                    }, "v121-memdex-dump").start()
-                } else {
-                    GuestBreadcrumb.log(
-                        "v121-plugin-probe not AW " +
-                            "(${application.javaClass.name}), skipped"
-                    )
-                }
-            } catch (_: Throwable) {
-                GuestBreadcrumb.log("v121-plugin-probe AW state failed")
-            }
-            try {
-                val pmAi = application.packageManager.getApplicationInfo(
-                    application.packageName,
-                    android.content.pm.PackageManager.GET_META_DATA
-                )
-                val pmMd = pmAi?.metaData
-                GuestBreadcrumb.log(
-                    "v119-plugin-probe PM ApplicationInfo metaData=" +
-                        if (pmMd == null) {
-                            "null"
-                        } else {
-                            "keys=${pmMd.size()}"
-                        }
-                )
-            } catch (e: Throwable) {
-                GuestBreadcrumb.log(
-                    "v119-plugin-probe PM getApplicationInfo FAILED: " +
-                        "${e.javaClass.simpleName}: ${e.message}"
-                )
-            }
-        } catch (_: Throwable) {
-            // Probe must never disturb guest bind.
-        }
-    }
-
-    /**
-     * v118 probe (read-only, first Activity only): re-check the
-     * plugin framework state after the first Activity is created.
-     * This is the measurement v116/v117 never made — it decides
-     * whether a generic delayed provider retry could ever work
-     * (retry only helps if the framework initializes between
-     * provider install and here). Runs once per process; the
-     * onCreate probe above stays the authoritative onCreate-end
-     * measurement and is left untouched.
-     */
-    private fun probePluginStatePhase(
-        application: Application,
-        record: ApplicationRecord?,
-        phase: String
-    ) {
-        try {
-            val registered = record?.contentProviders?.any {
-                it.javaClass.name.contains("PluginManagerProvider")
-            }
-            GuestBreadcrumb.log(
-                "v118-plugin-probe phase=$phase " +
-                    "PluginManagerProvider registered=$registered " +
-                    "(contentProviders=${record?.contentProviders?.size})"
-            )
-            val loaderCls = try {
-                Class.forName(
-                    "com.mc10086.plugin.core.PluginLoader",
-                    false,
-                    application.classLoader
-                )
-            } catch (e: Throwable) {
-                GuestBreadcrumb.log(
-                    "v118-plugin-probe phase=$phase " +
-                        "PluginLoader class not found: ${e.javaClass.simpleName}"
-                )
-                return
-            }
-            val getApp = try {
-                loaderCls.getMethod("getApplication")
-            } catch (_: Throwable) {
-                loaderCls.declaredMethods.firstOrNull { it.name == "getApplication" }
-            }
-            if (getApp == null) {
-                GuestBreadcrumb.log(
-                    "v118-plugin-probe phase=$phase getApplication method not found"
-                )
-                return
-            }
-            getApp.isAccessible = true
-            val state = try {
-                val app = if (java.lang.reflect.Modifier.isStatic(getApp.modifiers)) {
-                    getApp.invoke(null)
-                } else {
-                    "getApplication is not static, skipped"
-                }
-                if (app is Application) {
-                    "INITIALIZED (application=${app.javaClass.name})"
-                } else {
-                    "NOT_INITIALIZED (returned=$app)"
-                }
-            } catch (e: Throwable) {
-                val cause = (e as? java.lang.reflect.InvocationTargetException)?.cause ?: e
-                "NOT_INITIALIZED (${cause.javaClass.simpleName}: ${cause.message})"
-            }
-            GuestBreadcrumb.log(
-                "v118-plugin-probe phase=$phase getApplication state=$state"
-            )
-        } catch (_: Throwable) {
-            // Probe must never disturb the guest.
-        }
-    }
-
 
 
     @Volatile private var loginProbeLastActivity: android.app.Activity? = null
@@ -2837,7 +2090,7 @@ class VirtualApplicationManager @Inject constructor(
                         // v155: same stop-before-start as the face
                         // click trace — a login tap inside the init
                         // window otherwise starts nothing.
-                        v155StopBeforeStart(dir, "v155-login")
+                        InitTrace.stopBeforeStart(dir, "v155-login")
                         android.os.Debug.startMethodTracing(
                             traceFile.absolutePath, 32 * 1024 * 1024
                         )
@@ -2927,7 +2180,7 @@ class VirtualApplicationManager @Inject constructor(
                         // fired); a second start while tracing is
                         // a silent no-op (v152's click trace came
                         // back 0 bytes).
-                        v155StopBeforeStart(dir, "v155-click")
+                        InitTrace.stopBeforeStart(dir, "v155-click")
                         android.os.Debug.startMethodTracing(
                             traceFile.absolutePath, 64 * 1024 * 1024
                         )
@@ -2955,7 +2208,7 @@ class VirtualApplicationManager @Inject constructor(
                             // thread/time is captured in
                             // v155-click-filtered.log.
                             Thread({
-                                filterV154Trace(
+                                InitTrace.filter(
                                     traceFile, dir,
                                     "v155-click-filtered.log", "v155-click"
                                 )
