@@ -7193,6 +7193,11 @@ static jobjectArray hooked_ufs_list0(JNIEnv* env, jclass, jobject file) {
         }
     }
     if (translated) java_io_record("list0", real.c_str(), 0, 0);
+    // 诊断：list0 是 File.listFiles 的唯一入口，必须能看到它拿到的路径和结果数。
+    // 之前 java_io_record 只记「命中翻译」与「失败」，成功的 list0 完全不可见，
+    // 导致「via 看不见离线页面」无法区分是「没列举」还是「列举为空」。
+    LOGI("ufs list0%s: %s -> %zu entries%s", translated ? " [xlat]" : "",
+         real.c_str(), names.size(), names.empty() ? " (EMPTY)" : "");
     return arr;
 }
 
