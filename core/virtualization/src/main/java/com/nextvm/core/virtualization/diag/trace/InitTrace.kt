@@ -1,4 +1,4 @@
-package com.nextvm.core.virtualization.lifecycle.diag
+package com.nextvm.core.virtualization.diag.trace
 
 import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
 import java.io.File

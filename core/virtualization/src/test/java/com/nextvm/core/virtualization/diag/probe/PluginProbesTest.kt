@@ -1,4 +1,4 @@
-package com.nextvm.core.virtualization.lifecycle.diag
+package com.nextvm.core.virtualization.diag.probe
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

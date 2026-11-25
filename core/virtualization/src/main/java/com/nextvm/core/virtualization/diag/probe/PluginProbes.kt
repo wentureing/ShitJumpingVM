@@ -1,7 +1,8 @@
-package com.nextvm.core.virtualization.lifecycle.diag
+package com.nextvm.core.virtualization.diag.probe
 
 import android.app.Application
 import com.nextvm.core.common.findField
+import com.nextvm.core.virtualization.diag.dump.GuestMemoryDump
 import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
 import com.nextvm.core.virtualization.lifecycle.VirtualApplicationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualApplicationManager.ApplicationRecord

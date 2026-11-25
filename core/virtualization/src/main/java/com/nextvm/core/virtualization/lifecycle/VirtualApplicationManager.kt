@@ -19,11 +19,14 @@ import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
-import com.nextvm.core.virtualization.lifecycle.diag.GuestMemoryDump
-import com.nextvm.core.virtualization.lifecycle.diag.InitTrace
-import com.nextvm.core.virtualization.lifecycle.diag.MapsSnapshot
-import com.nextvm.core.virtualization.lifecycle.diag.PluginProbes
-import com.nextvm.core.virtualization.lifecycle.diag.RealSnap
+import com.nextvm.core.virtualization.diag.dump.GuestMemoryDump
+import com.nextvm.core.virtualization.diag.fieldOf
+import com.nextvm.core.virtualization.diag.probe.HijackProbes
+import com.nextvm.core.virtualization.diag.probe.PluginProbes
+import com.nextvm.core.virtualization.diag.suppress.AutofillSuppressor
+import com.nextvm.core.virtualization.diag.dump.MapsSnapshot
+import com.nextvm.core.virtualization.diag.trace.InitTrace
+import com.nextvm.core.virtualization.diag.dump.RealSnap
 
 /**
  * VirtualApplicationManager — Manages guest app Application lifecycle.
@@ -351,115 +354,6 @@ class VirtualApplicationManager @Inject constructor(
         }
     }
 
-    /**
-     * v36 step 3: engine-side ActivityLifecycleCallbacks on the guest
-     * Application — an activity breadcrumb independent of the
-     * instrumentation chain (created/started/resumed/... per activity).
-     */
-    /**
-     * v129-autofill: disable Autofill for a guest activity's window.
-     * launch156 proved taps on login/auth views park main in
-     * AutofillManager.notifyViewEntered -> SyncResultReceiver wait
-     * (the autofill service never answers promptly inside the
-     * sandbox) -> 5s input dispatch ANR. Setting
-     * NO_EXCLUDE_DESCENDANTS on the decor view makes the whole
-     * window report AUTOFILL_TYPE_NONE, so Views never call
-     * notifyViewEntered and no session is started. Only guest
-     * activities reach this callback (registered on the guest
-     * Application); host activities are untouched. Best-effort:
-     * a missing decor view (no content yet) just skips; the
-     * resumed callback covers it once content exists.
-     */
-    private fun disableAutofillForGuestActivity(a: android.app.Activity) {
-        try {
-            val decor = a.window?.decorView ?: return
-            decor.importantForAutofill =
-                android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-            GuestBreadcrumb.log("v129-autofill disabled " + a.javaClass.name)
-        } catch (_: Throwable) {
-            // never break activity lifecycle over autofill
-        }
-    }
-
-    /**
-     * v131-autofill: per-view Autofill disable + type report.
-     * launch158 proved the v129 decor-only flag does not stop
-     * sessions: they still start on focus/click. Either the
-     * guest's input fields explicitly override the inherited
-     * mode, or this framework build does not check view type
-     * before startSession. Walk the hierarchy on resume (and
-     * on the v124 timer, for late-inflated views), set EVERY
-     * view to NO_EXCLUDE_DESCENDANTS, and report the pre-change
-     * modes (so the next verdict can see whether fields were
-     * explicitly YES) plus any views carrying autofillHints.
-     * If stalls stop, per-view override was the cause; if they
-     * persist, sessions start regardless of type and
-     * service-level interception is required.
-     */
-    private fun disableAutofillPerView(a: android.app.Activity) {
-        try {
-            val decor = try {
-                a.window?.decorView
-            } catch (_: Throwable) {
-                null
-            } ?: return
-            var total = 0
-            var changed = 0
-            val modes = mutableMapOf<Int, Int>()
-            val explicit = mutableListOf<String>()
-            val stack = ArrayDeque<android.view.View>()
-            stack.add(decor)
-            while (stack.isNotEmpty()) {
-                val v = stack.removeLast()
-                total++
-                try {
-                    val mode = v.importantForAutofill
-                    modes[mode] = (modes[mode] ?: 0) + 1
-                    val hints = try {
-                        v.autofillHints
-                    } catch (_: Throwable) {
-                        null
-                    }
-                    if (mode == android.view.View.IMPORTANT_FOR_AUTOFILL_YES ||
-                        mode == android.view.View.IMPORTANT_FOR_AUTOFILL_YES_EXCLUDE_DESCENDANTS ||
-                        (hints != null && hints.isNotEmpty())
-                    ) {
-                        if (explicit.size < 10) {
-                            explicit.add(
-                                v.javaClass.name + " mode=" + mode +
-                                    " hints=" +
-                                    (hints?.joinToString(",") ?: "-")
-                            )
-                        }
-                    }
-                    if (mode != android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS) {
-                        v.importantForAutofill =
-                            android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-                        changed++
-                    }
-                } catch (_: Throwable) {
-                }
-                if (v is android.view.ViewGroup) {
-                    for (i in 0 until v.childCount) {
-                        try {
-                            v.getChildAt(i)?.let { stack.add(it) }
-                        } catch (_: Throwable) {
-                        }
-                    }
-                }
-            }
-            GuestBreadcrumb.log(
-                "v131-autofill per-view " + a.javaClass.name +
-                    " total=" + total + " changed=" + changed +
-                    " modes=" + modes.entries.joinToString(",") {
-                        it.key.toString() + ":" + it.value
-                    } +
-                    " explicit=" + explicit.joinToString(";")
-            )
-        } catch (_: Throwable) {
-            // never break lifecycle over autofill
-        }
-    }
 
     private fun registerBreadcrumbCallbacks(app: Application) {
         // ===== guest 侧诊断（sandboxsensor）=====
@@ -497,7 +391,7 @@ class VirtualApplicationManager @Inject constructor(
                         a: android.app.Activity, b: android.os.Bundle?
                     ) {
                         GuestBreadcrumb.log("cb onActivityCreated " + a.javaClass.name)
-                        disableAutofillForGuestActivity(a)
+                        AutofillSuppressor.disableForActivity(a)
                         if (!firstActivityProbed) {
                             firstActivityProbed = true
                             val rec = applications.values.firstOrNull {
@@ -528,8 +422,8 @@ class VirtualApplicationManager @Inject constructor(
                         // Activity, so the timer below covers those).
                         loginProbeLastActivity = a
                         probeLoginButtonState(a, "resumed")
-                        disableAutofillForGuestActivity(a)
-                        disableAutofillPerView(a)
+                        AutofillSuppressor.disableForActivity(a)
+                        AutofillSuppressor.disablePerView(a)
                         wrapFaceVerifyButton(a)
                         probeAuthIntentPhone(a)
                         probeAuthIntentPhone145(a)
@@ -570,7 +464,7 @@ class VirtualApplicationManager @Inject constructor(
                         try {
                             loginProbeLastActivity?.let {
                                 probeLoginButtonState(it, "timer")
-                                disableAutofillPerView(it)
+                                AutofillSuppressor.disablePerView(it)
                                 wrapFaceVerifyButton(it)
                                 probeAuthIntentPhone(it)
                                 probeAuthIntentPhone145(it)
@@ -790,25 +684,13 @@ class VirtualApplicationManager @Inject constructor(
                     val wait = at - elapsed
                     if (wait > 0) Thread.sleep(wait)
                     elapsed = at
-                    sampleHijackState(out, label)
-                    unwrapHijackProxy(out, label)
+                    HijackProbes.sample(out, label, stockInitNote)
+                    HijackProbes.unwrap(out, label, stockInitExperiment, UNWRAP_ENABLED)
                 }
             } catch (_: Throwable) {
                 // diagnostics must never disturb the guest
             }
         }.apply { isDaemon = true; name = "nv-hijacktrace" }.start()
-    }
-
-    private fun fieldOf(cls: Class<*>, name: String): java.lang.reflect.Field {
-        var c: Class<*>? = cls
-        while (c != null) {
-            try {
-                return c.getDeclaredField(name).apply { isAccessible = true }
-            } catch (_: NoSuchFieldException) {
-                c = c.superclass
-            }
-        }
-        throw NoSuchFieldException(name + " on " + cls.name)
     }
 
     /**
@@ -1024,222 +906,6 @@ class VirtualApplicationManager @Inject constructor(
         }
     }
 
-    private fun sampleHijackState(out: java.io.File, label: String) {
-        val sb = StringBuilder()
-        sb.append("==== ").append(label).append(" ====\n")
-        fun line(s: String) {
-            sb.append(s).append('\n')
-            Timber.tag("HijackTrace").i("%s %s", label, s)
-        }
-        try {
-            val atCls = Class.forName("android.app.ActivityThread")
-            val at = atCls.getMethod("currentActivityThread").invoke(null)
-            if (at == null) {
-                line("ActivityThread: null")
-                out.appendText(sb.toString())
-                return
-            }
-            // (b) live ActivityThread instrumentation
-            val atInstr = fieldOf(atCls, "mInstrumentation").get(at)
-            line("ActivityThread.mInstrumentation = " + (atInstr?.javaClass?.name ?: "null"))
-            line("v35 stock-init: " + stockInitNote)
-            // guest Application + its classloader (loads the SDK classes)
-            val app = atCls.getMethod("getApplication").invoke(at)
-                as? android.app.Application
-            line("Application = " + (app?.javaClass?.name ?: "null"))
-            val guestCl = app?.javaClass?.classLoader
-            // (c) registered lifecycle callbacks on the Application
-            if (app != null) {
-                try {
-                    val cbs = fieldOf(Class.forName("android.app.Application"),
-                        "mActivityLifecycleCallbacks").get(app) as? java.util.ArrayList<*>
-                    if (cbs == null) {
-                        line("lifecycleCallbacks = null")
-                    } else {
-                        line("lifecycleCallbacks.size = " + cbs.size)
-                        for (cb in cbs) line("  cb: " + (cb?.javaClass?.name ?: "null"))
-                    }
-                } catch (e: Throwable) {
-                    line("lifecycleCallbacks: <" + e.javaClass.simpleName + ">")
-                }
-            }
-            // SDK end-state statics, read through the guest classloader
-            if (guestCl != null) {
-                try {
-                    val sdk = Class.forName("com.sdk.hijack.api.HijackSDK", false, guestCl)
-                    val done = fieldOf(sdk, "isRegisterActivityLifecycleCallbacks")
-                        .getBoolean(null)
-                    line("HijackSDK.isRegisterActivityLifecycleCallbacks = " + done)
-                } catch (e: Throwable) {
-                    line("HijackSDK flag: <" + e.javaClass.simpleName + ">")
-                }
-                try {
-                    val pi = Class.forName(
-                        "com.sdk.hijack.base.ProxyInstrumentation", false, guestCl)
-                    val inst = fieldOf(pi, "instance").get(null)
-                    line("ProxyInstrumentation.instance = " +
-                        (if (inst == null) "null" else "set(sameAsAT=" + (inst === atInstr) + ")"))
-                    if (inst != null) {
-                        try {
-                            val ori = fieldOf(pi, "oriInstrumentation").get(inst)
-                            val typ = fieldOf(pi, "oriClassType").getInt(inst)
-                            line("  oriInstrumentation = " +
-                                (ori?.javaClass?.name ?: "null") + " oriClassType = " + typ)
-                        } catch (e: Throwable) {
-                            line("  ori: <" + e.javaClass.simpleName + ">")
-                        }
-                    }
-                } catch (e: Throwable) {
-                    line("ProxyInstrumentation.instance: <" + e.javaClass.simpleName + ">")
-                }
-            }
-            // per-Activity instrumentation (registerActivity's target)
-            try {
-                val actsAny = fieldOf(atCls, "mActivities").get(at)
-                if (actsAny == null) {
-                    line("mActivities = null")
-                } else {
-                    val entries = actsAny.javaClass.getMethod("entrySet")
-                        .invoke(actsAny) as java.util.Set<*>
-                    line("mActivities.size = " + entries.size)
-                    for (entry in entries) {
-                        if (entry == null) continue
-                        val rec = entry.javaClass.getMethod("getValue")
-                            .invoke(entry) ?: continue
-                        val act = fieldOf(rec.javaClass, "activity").get(rec) ?: continue
-                        val ai = try {
-                            fieldOf(Class.forName("android.app.Activity"),
-                                "mInstrumentation").get(act)
-                        } catch (e: Throwable) {
-                            null
-                        }
-                        line("  activity " + act.javaClass.name +
-                            " mInstrumentation = " + (ai?.javaClass?.name ?: "null"))
-                    }
-                }
-            } catch (e: Throwable) {
-                line("mActivities: <" + e.javaClass.simpleName + ">")
-            }
-            // v36 anchor A: framework provider map — did the framework
-            // install any providers itself (the engine installs the
-            // guest's manually; anything here came via the framework)?
-            try {
-                val pmAny = fieldOf(atCls, "mProviderMap").get(at)
-                if (pmAny == null) {
-                    line("mProviderMap = null")
-                } else {
-                    val entries = pmAny.javaClass.getMethod("entrySet")
-                        .invoke(pmAny) as java.util.Set<*>
-                    line("mProviderMap.size = " + entries.size)
-                    for (entry in entries) {
-                        if (entry == null) continue
-                        val rec = entry.javaClass.getMethod("getValue")
-                            .invoke(entry) ?: continue
-                        val local = try {
-                            fieldOf(rec.javaClass, "mLocalProvider").get(rec)
-                        } catch (e: Throwable) {
-                            null
-                        }
-                        line("  provider local=" +
-                            (local?.javaClass?.name ?: "null"))
-                    }
-                }
-            } catch (e: Throwable) {
-                line("mProviderMap: <" + e.javaClass.simpleName + ">")
-            }
-            // v36 anchor B: is the FPSDK native lib even loaded in
-            // this process? fetchDeviceId cannot have run otherwise.
-            // (libDexHelper as a positive control — it always loads.)
-            try {
-                val maps = java.io.File("/proc/self/maps").readText()
-                line("maps libUnicomFPSDK.so loaded = " +
-                    maps.contains("libUnicomFPSDK"))
-                line("maps libDexHelper.so loaded = " +
-                    maps.contains("libDexHelper"))
-            } catch (e: Throwable) {
-                line("maps: <" + e.javaClass.simpleName + ">")
-            }
-        } catch (e: Throwable) {
-            line("sample failed: <" + e.javaClass.simpleName + "> " + e.message)
-        }
-        try {
-            out.appendText(sb.toString())
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun unwrapHijackProxy(out: java.io.File, label: String) {
-        val sb = StringBuilder()
-        fun line(s: String) {
-            sb.append(s).append('\n')
-            Timber.tag("HijackTrace").i("%s unwrap: %s", label, s)
-        }
-        if (stockInitExperiment) {
-            line("skipped, v35 stock-init experiment active")
-            try { out.appendText(sb.toString()) } catch (_: Throwable) { }
-            return
-        }
-        if (!UNWRAP_ENABLED) {
-            line("unwrap disabled (v36 observe-only baseline)")
-            try { out.appendText(sb.toString()) } catch (_: Throwable) { }
-            return
-        }
-        try {
-            val atCls = Class.forName("android.app.ActivityThread")
-            val at = atCls.getMethod("currentActivityThread").invoke(null)
-            if (at == null) {
-                line("skip, ActivityThread null")
-                out.appendText(sb.toString())
-                return
-            }
-            val instrF = fieldOf(atCls, "mInstrumentation")
-            val cur = instrF.get(at)
-            if (cur == null ||
-                cur.javaClass.name != "com.sdk.hijack.base.ProxyInstrumentation"
-            ) {
-                line("skip, AT.mInstrumentation = " + (cur?.javaClass?.name ?: "null"))
-                out.appendText(sb.toString())
-                return
-            }
-            val ori = fieldOf(cur.javaClass, "oriInstrumentation").get(cur)
-            if (ori == null) {
-                line("abort, oriInstrumentation is null")
-                out.appendText(sb.toString())
-                return
-            }
-            instrF.set(at, ori)
-            line("AT.mInstrumentation ProxyInstrumentation -> " + ori.javaClass.name)
-            try {
-                val actsAny = fieldOf(atCls, "mActivities").get(at)
-                val entries = actsAny.javaClass.getMethod("entrySet")
-                    .invoke(actsAny) as java.util.Set<*>
-                val aiF = fieldOf(Class.forName("android.app.Activity"),
-                    "mInstrumentation")
-                for (entry in entries) {
-                    if (entry == null) continue
-                    val rec = entry.javaClass.getMethod("getValue")
-                        .invoke(entry) ?: continue
-                    val act = fieldOf(rec.javaClass, "activity").get(rec) ?: continue
-                    val ai = aiF.get(act)
-                    if (ai != null && ai.javaClass.name ==
-                        "com.sdk.hijack.base.ProxyInstrumentation"
-                    ) {
-                        aiF.set(act, ori)
-                        line("activity " + act.javaClass.name +
-                            " mInstrumentation -> ori")
-                    }
-                }
-            } catch (e: Throwable) {
-                line("activities swap: <" + e.javaClass.simpleName + ">")
-            }
-        } catch (e: Throwable) {
-            line("unwrap failed: <" + e.javaClass.simpleName + "> " + e.message)
-        }
-        try {
-            out.appendText(sb.toString())
-        } catch (_: Throwable) {
-        }
-    }
 
     /**
      * Framework-native bind (B2): build the guest's app ContextImpl
