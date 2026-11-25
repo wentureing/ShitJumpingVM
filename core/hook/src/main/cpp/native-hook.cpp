@@ -6739,7 +6739,18 @@ static bool java_io_refs(JNIEnv* env) {
     }
 
     if (g_errno_class == nullptr) {
-        jclass local = find_class_via_forname(env, "libcore/io/ErrnoException");
+        // 关键：现代 Android 的 ErrnoException 在 android.system 包，不是 libcore.io！
+        // 实测设备 dex：Class descriptor = 'Landroid/system/ErrnoException;'
+        //                flags = PUBLIC FINAL, <init>(String,int)
+        // 从 v141 到上一版，这里一直写的是 libcore/io/ErrnoException -> 永远拿不到
+        // -> 永远 fallback 到 FileNotFoundException -> File.exists() 的
+        //    UnixFileSystem.checkAccess（只 catch ErrnoException）捕获不到 -> FATAL。
+        // 这是 v147 以来"开了 javaIo 就崩"的最终根因。
+        jclass local = find_class_via_forname(env, "android/system/ErrnoException");
+        if (local == nullptr) {
+            // 兼容旧版本（Android 8 及更早用 libcore.io.ErrnoException）
+            local = find_class_via_forname(env, "libcore/io/ErrnoException");
+        }
         if (local != nullptr) {
             g_errno_class = static_cast<jclass>(env->NewGlobalRef(local));
             env->DeleteLocalRef(local);
