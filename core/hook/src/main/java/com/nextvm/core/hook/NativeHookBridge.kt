@@ -425,11 +425,29 @@ class NativeHookBridge @Inject constructor() {
         val guestExternalData = "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
         addPathRedirection("/storage/emulated/0/Android/data/$guestPackageName/", guestExternalData)
         addPathRedirection("/sdcard/Android/data/$guestPackageName/", guestExternalData)
+        // 无尾斜杠变体：路径恰好等于前缀本身时（getExternalFilesDir/getObbDir 返回的正是这种形式），
+        // 带斜杠的规则 startsWith 不成立，会原样返回 -> 与「有斜杠变体」落到不同目录。
+        addPathRedirection(
+            "/storage/emulated/0/Android/data/$guestPackageName",
+            guestExternalData.trimEnd('/')
+        )
+        addPathRedirection(
+            "/sdcard/Android/data/$guestPackageName",
+            guestExternalData.trimEnd('/')
+        )
 
         // OBB storage —— 同理，getExternalObbDir 返回 <appDir>/sdcard/Android/obb/<pkg>
         val guestObb = "$sandboxDataDir/sdcard/Android/obb/$guestPackageName/"
         addPathRedirection("/storage/emulated/0/Android/obb/$guestPackageName/", guestObb)
         addPathRedirection("/sdcard/Android/obb/$guestPackageName/", guestObb)
+        addPathRedirection(
+            "/storage/emulated/0/Android/obb/$guestPackageName",
+            guestObb.trimEnd('/')
+        )
+        addPathRedirection(
+            "/sdcard/Android/obb/$guestPackageName",
+            guestObb.trimEnd('/')
+        )
 
 
         // 宿主包名 external 兜底。说明见 docs/设计/设计-按进程区分的宿主路径兜底.md

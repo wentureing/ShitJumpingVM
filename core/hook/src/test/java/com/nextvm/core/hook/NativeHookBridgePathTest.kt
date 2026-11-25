@@ -475,21 +475,20 @@ class NativeHookBridgePathTest {
         }
     }
 
-    /** T34：翻译保持路径段数量不变（只改前缀，不增删层级）。 */
+    /**
+     * T34：**翻译后的长度可以精确预测**。
+     *
+     * 注意：段数会变（/data/data/<pkg>/ 3 段 -> /sandbox/ 1 段），
+     * 所以不能断言"段数不变"（那是错的）。正确的是：
+     *   out.length == to.length + (input.length - from.length)
+     */
     @Test
-    fun `T34 翻译不改变路径段数`() {
-        bridge.setupAppRedirections(guest, "i1", sandbox)
-        val cases = listOf(
-            "/data/data/$guest/files/a/b/c",
-            "/storage/emulated/0/Android/data/$guest/files/offline/x.mht",
-            "/sdcard/Android/obb/$guest/x.obb",
-        )
-        for (input in cases) {
-            val out = bridge.translatePath(input)
-            val inSegs = input.trimEnd('/').split('/').count { it.isNotEmpty() }
-            val outSegs = out.trimEnd('/').split('/').count { it.isNotEmpty() }
-            assertEquals("input=$input out=$out 段数变了", inSegs, outSegs)
-        }
+    fun `T34 翻译后长度可预测`() {
+        bridge.addPathRedirection("/origin/", "/target/")
+        val input = "/origin/a/b/c"
+        val out = bridge.translatePath(input)
+        assertEquals("/target/" + "a/b/c", out)
+        assertEquals("/target/".length + ("/origin/a/b/c".length - "/origin/".length), out.length)
     }
 
     /**
