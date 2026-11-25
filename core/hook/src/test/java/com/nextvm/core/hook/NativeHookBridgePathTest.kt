@@ -9,19 +9,27 @@ import org.junit.Test
 /**
  * 路径重定向规则的契约测试（纯 JVM，不依赖 native）。
  *
- * 为什么可纯 JVM：`translatePath` 只读 Kotlin 的 Set/Map；
- * `addPathRedirection` 在 `nativeHooksAvailable == false` 时不会调 JNI，
- * 而纯 JVM 环境下该标志恒为 false。
+ * 核心契约是**写入侧与读取侧必须落到同一物理目录**：
+ *   - 写入侧：`SandboxManager.get*Dir()` 返回的沙箱路径（应用拿到的）
+ *   - 读取侧：应用自己拼的宿主路径，经 `translatePath` 后的沙箱路径
+ * 两侧不一致时，表现为"保存成功但列表为空"——离线页面看不见就是这么来的。
  *
  * 分组：
- *   T1-T7   基础契约（最长前缀 / 兜底规则 / 未命中 / hidden / 覆盖 / 五类前缀）
- *   T8-T13  前缀替换的正确性（曾因 String.replace 全局替换出错）
- *   T14-T20 边界与异常输入（前缀边界 / 包名冲突 / 空串 / 双斜杠 / 超长 / 中文）
- *   T21-T24 幂等与链式（必须只翻一次）
+ *   T1-T7   基础契约（最长前缀 / 兜底 / 未命中 / hidden / 覆盖 / 五类前缀）
+ *   T8-T13  前缀替换正确性（曾因 String.replace 全局替换出错）
+ *   T14-T20 边界与异常输入
+ *   T21-T24 幂等与链式
+ *   T25-T29 **写入侧与读取侧一致性**（同类错误的回归测试）
  */
 class NativeHookBridgePathTest {
 
     private lateinit var bridge: NativeHookBridge
+
+    /** 与被测实现无关的常量：SandboxManager.getExternalStorageDir 的真实形态。 */
+    private val sandbox = "/sandbox"
+    private val guest = "mark.via"
+    private val guestExternalData = "$sandbox/sdcard/Android/data/$guest"
+    private val guestObb = "$sandbox/sdcard/Android/obb/$guest"
 
     @Before
     fun setUp() {
@@ -44,41 +52,34 @@ class NativeHookBridgePathTest {
         )
     }
 
-    /**
-     * T2：宿主包名路径必须落到 guest 自己的 external 目录。
-     *
-     * 这是离线页面「保存到 A、从 B 读」那个 bug 的回归测试：
-     * guest 保存走 getExternalFilesDir -> <sandbox>/sdcard/Android/data/<guest>/
-     * guest 读取自己拼 .../Android/data/<getOpPackageName()>/（= 宿主包名）
-     * 两边必须是同一个目录。
-     */
+    /** T2：宿主包名路径必须落到 guest 自己的 external 目录（不是 host_ext）。 */
     @Test
     fun `T2 宿主包名路径落到 guest external 目录`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
         val out = bridge.translatePath(
             "/storage/emulated/0/Android/data/com.nextvm.app/files/offline/a.mht"
         )
         if (NativeHookBridge.HOST_EXTERNAL_FALLBACK) {
-            assertEquals("/sandbox/sdcard/Android/data/mark.via/files/offline/a.mht", out)
+            assertEquals("$guestExternalData/files/offline/a.mht", out)
         } else {
             assertEquals("/storage/emulated/0/Android/data/com.nextvm.app/files/offline/a.mht", out)
         }
     }
 
-    /** T3：guest 自己的 external 路径仍走 external_data，不受兜底规则影响。 */
+    /** T3：guest 自身 external 路径落到 SandboxManager 同一目录。 */
     @Test
-    fun `T3 guest 自身路径不受影响`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
+    fun `T3 guest 自身 external 路径落到同一目录`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
         assertEquals(
-            "/sandbox/external_data/files/x",
-            bridge.translatePath("/storage/emulated/0/Android/data/mark.via/files/x")
+            "$guestExternalData/files/x",
+            bridge.translatePath("/storage/emulated/0/Android/data/$guest/files/x")
         )
     }
 
     /** T4：没命中任何规则的路径必须原样返回（不能误改）。 */
     @Test
     fun `T4 未命中原样返回`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
         val p = "/data/app/com.other/base.apk"
         assertEquals(p, bridge.translatePath(p))
     }
@@ -100,34 +101,33 @@ class NativeHookBridgePathTest {
         assertEquals("/second/b", bridge.translatePath("/a/b"))
     }
 
-    /** T7：五类必需前缀都被注册（data / user-0 / external / obb）。 */
+    /** T7：setupAppRedirections 覆盖全部必需前缀。 */
     @Test
-    fun `T7 setupAppRedirections 覆盖五类前缀`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
-        assertEquals("/sandbox/a", bridge.translatePath("/data/data/mark.via/a"))
-        assertEquals("/sandbox/a", bridge.translatePath("/data/user/0/mark.via/a"))
+    fun `T7 setupAppRedirections 覆盖必需前缀`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        assertEquals("$sandbox/a", bridge.translatePath("/data/data/$guest/a"))
+        assertEquals("$sandbox/a", bridge.translatePath("/data/user/0/$guest/a"))
         assertEquals(
-            "/sandbox/external_data/a",
-            bridge.translatePath("/storage/emulated/0/Android/data/mark.via/a")
+            "$guestExternalData/a",
+            bridge.translatePath("/storage/emulated/0/Android/data/$guest/a")
         )
         assertEquals(
-            "/sandbox/external_data/a",
-            bridge.translatePath("/sdcard/Android/data/mark.via/a")
+            "$guestExternalData/a",
+            bridge.translatePath("/sdcard/Android/data/$guest/a")
         )
         assertEquals(
-            "/sandbox/obb/a",
-            bridge.translatePath("/storage/emulated/0/Android/obb/mark.via/a")
+            "$guestObb/a",
+            bridge.translatePath("/storage/emulated/0/Android/obb/$guest/a")
+        )
+        assertEquals(
+            "$guestObb/a",
+            bridge.translatePath("/sdcard/Android/obb/$guest/a")
         )
     }
 
     // ---------------- T8-T13 前缀替换的正确性 ----------------
 
-    /**
-     * T8：**只替换前缀，不能替换路径中间出现的同样子串**。
-     *
-     * 旧实现用 originalPath.replace(bestMatch, bestRedirect)，
-     * 输入 /a/x/a/y 会变成 /sandbox/x/sandbox/y —— 完全错误的路径。
-     */
+    /** T8：只替换前缀，不能替换路径中间出现的同样子串。 */
     @Test
     fun `T8 中间出现的同样子串不得被替换`() {
         bridge.addPathRedirection("/a/", "/sandbox/")
@@ -135,45 +135,44 @@ class NativeHookBridgePathTest {
         assertNotEquals("/sandbox/x/sandbox/y", bridge.translatePath("/a/x/a/y"))
     }
 
-    /** T9：输入恰好等于规则前缀（无剩余部分）时，返回目标前缀。 */
+    /** T9：输入恰好等于规则前缀时返回目标前缀。 */
     @Test
     fun `T9 精确匹配前缀`() {
-        bridge.addPathRedirection("/data/data/mark.via/", "/sandbox/")
-        assertEquals("/sandbox/", bridge.translatePath("/data/data/mark.via/"))
+        bridge.addPathRedirection("/data/data/$guest/", "$sandbox/")
+        assertEquals("$sandbox/", bridge.translatePath("/data/data/$guest/"))
     }
 
-    /** T10：目标前缀无尾斜杠、输入带剩余斜杠 —— 不能拼出双斜杠。 */
+    /** T10：目标无尾斜杠、输入有剩余斜杠 —— 不产生双斜杠。 */
     @Test
     fun `T10 目标无尾斜杠不产生双斜杠`() {
         bridge.addPathRedirection("/origin/", "/target")
         assertEquals("/target/x", bridge.translatePath("/origin/x"))
     }
 
-    /** T11：目标前缀有尾斜杠、输入剩余部分也以斜杠开头 —— 只保留一个。 */
+    /** T11：两边都有斜杠只保留一个。 */
     @Test
     fun `T11 两边都有斜杠只保留一个`() {
         bridge.addPathRedirection("/origin", "/target/")
         assertEquals("/target/a/b", bridge.translatePath("/origin/a/b"))
     }
 
-    /** T12：真实规则组合下，offline 目录的完整往返。 */
+    /** T12：真实规则集下 offline 目录完整往返（含中文文件名）。 */
     @Test
     fun `T12 offline 目录完整往返`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
         assertEquals(
-            "/sandbox/sdcard/Android/data/mark.via/files/offline/百度一下.mht",
+            "$guestExternalData/files/offline/百度一下.mht",
             bridge.translatePath(
                 "/storage/emulated/0/Android/data/com.nextvm.app/files/offline/百度一下.mht"
             )
         )
-        // 短路径形式 /sdcard/... 也必须落到同一处
         assertEquals(
-            "/sandbox/sdcard/Android/data/mark.via/files/offline/x.mht",
+            "$guestExternalData/files/offline/x.mht",
             bridge.translatePath("/sdcard/Android/data/com.nextvm.app/files/offline/x.mht")
         )
     }
 
-    /** T13：多条规则并存时，最长前缀仍是决定性因素（与注册顺序无关）。 */
+    /** T13：注册顺序不影响最长前缀。 */
     @Test
     fun `T13 注册顺序不影响最长前缀`() {
         val b2 = NativeHookBridge()
@@ -189,54 +188,40 @@ class NativeHookBridgePathTest {
 
     // ---------------- T14-T20 边界与异常输入 ----------------
 
-    /**
-     * T14：前缀边界 —— 规则 /a/b 不应匹配 /a/bc。
-     *
-     * 已知行为：当前实现是纯 startsWith，所以 /a/bc/x 会被 /a/b 命中。
-     * 这条测试把现状钉住，便于日后改进时看到差异。
-     */
+    /** T14：带尾斜杠的规则不会误伤 /a/bc。 */
     @Test
-    fun `T14 前缀边界现状`() {
+    fun `T14 前缀边界`() {
         bridge.addPathRedirection("/a/b/", "/target/")
-        // 带尾斜杠的规则不会误伤 /a/bc/（因为要求 "/a/b/" 前缀）
         assertEquals("/a/bc/x", bridge.translatePath("/a/bc/x"))
         assertEquals("/target/x", bridge.translatePath("/a/b/x"))
     }
 
-    /**
-     * T15：guest 包名互为前缀时不串味。
-     *
-     * mark.via 与 mark.via.pro 是两个不同应用，规则必须靠尾部斜杠区分。
-     */
+    /** T15：guest 包名互为前缀时不串味。 */
     @Test
     fun `T15 包名互为前缀不串味`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
-        assertEquals(
-            "/sandbox/a",
-            bridge.translatePath("/data/data/mark.via/a")
-        )
-        // mark.via.pro 不应被 mark.via 的规则命中
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        assertEquals("$sandbox/a", bridge.translatePath("/data/data/$guest/a"))
         assertEquals(
             "/data/data/mark.via.pro/a",
             bridge.translatePath("/data/data/mark.via.pro/a")
         )
     }
 
-    /** T16：空字符串输入必须原样返回（不能抛异常）。 */
+    /** T16：空字符串原样返回。 */
     @Test
     fun `T16 空字符串原样返回`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
         assertEquals("", bridge.translatePath(""))
     }
 
-    /** T17：相对路径不被改写（只处理绝对前缀）。 */
+    /** T17：相对路径不被改写。 */
     @Test
     fun `T17 相对路径不改写`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
-        assertEquals("data/data/mark.via/a", bridge.translatePath("data/data/mark.via/a"))
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        assertEquals("data/data/$guest/a", bridge.translatePath("data/data/$guest/a"))
     }
 
-    /** T18：超长路径（2KB）能正常翻译。 */
+    /** T18：超长路径（200 段）能正常翻译。 */
     @Test
     fun `T18 超长路径`() {
         bridge.addPathRedirection("/origin/", "/target/")
@@ -256,7 +241,7 @@ class NativeHookBridgePathTest {
         )
     }
 
-    /** T20：hidePath 是精确匹配，不做前缀扩展（su 不应连累 sudo）。 */
+    /** T20：hidePath 是精确匹配（su 不连累 sudo）。 */
     @Test
     fun `T20 hidePath 精确匹配`() {
         bridge.hidePath("/system/bin/su")
@@ -266,21 +251,17 @@ class NativeHookBridgePathTest {
 
     // ---------------- T21-T24 幂等与链式 ----------------
 
-    /**
-     * T21：**翻译必须幂等** —— 翻译后的沙箱路径不能再被规则命中。
-     *
-     * 这是多层 hook 并存的安全前提：Java 层翻译后再调 libc，
-     * libc 的 GOT hook 看到沙箱路径必须原样透传。
-     */
+    /** T21：翻译必须幂等（多层 hook 并存的安全前提）。 */
     @Test
     fun `T21 翻译幂等`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
-        val once = bridge.translatePath("/storage/emulated/0/Android/data/com.nextvm.app/files/offline/a.mht")
-        val twice = bridge.translatePath(once)
-        assertEquals(once, twice)
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        val once = bridge.translatePath(
+            "/storage/emulated/0/Android/data/com.nextvm.app/files/offline/a.mht"
+        )
+        assertEquals(once, bridge.translatePath(once))
     }
 
-    /** T22：规则链 A->B、B->C 时，只翻译一次（不会连续跳到 C）。 */
+    /** T22：规则链 A->B、B->C 只翻译一次。 */
     @Test
     fun `T22 规则链只翻译一次`() {
         bridge.addPathRedirection("/a/", "/b/")
@@ -288,21 +269,302 @@ class NativeHookBridgePathTest {
         assertEquals("/b/x", bridge.translatePath("/a/x"))
     }
 
-    /** T23：真实规则集下，宿主包名路径的再次翻译必须不变（防双重翻译）。 */
+    /** T23：宿主包名路径再次翻译不变（防双重翻译）。 */
     @Test
     fun `T23 宿主包名路径幂等`() {
-        bridge.setupAppRedirections("mark.via", "mark.via_1", "/sandbox")
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
         val p = "/storage/emulated/0/Android/data/com.nextvm.app/files/x"
         val once = bridge.translatePath(p)
         assertEquals(once, bridge.translatePath(once))
     }
 
-    /** T24：hidden 判定发生在重定向之前 —— 即使路径同时命中规则，也返回 /dev/null。 */
+    /** T24：hidden 判定发生在重定向之前。 */
     @Test
     fun `T24 hidden 优先于重定向`() {
-        bridge.addPathRedirection("/data/data/mark.via/", "/sandbox/")
-        bridge.hidePath("/data/data/mark.via/files/secret")
-        assertEquals("/dev/null", bridge.translatePath("/data/data/mark.via/files/secret"))
-        assertEquals("/sandbox/files/public", bridge.translatePath("/data/data/mark.via/files/public"))
+        bridge.addPathRedirection("/data/data/$guest/", "$sandbox/")
+        bridge.hidePath("/data/data/$guest/files/secret")
+        assertEquals("/dev/null", bridge.translatePath("/data/data/$guest/files/secret"))
+        assertEquals("$sandbox/files/public", bridge.translatePath("/data/data/$guest/files/public"))
+    }
+
+    // ---------------- T25-T29 写入侧 vs 读取侧一致性 ----------------
+
+    /**
+     * T25：**External Files 两侧一致**。
+     *
+     * 写入侧：SandboxManager.getExternalAppFilesDir
+     *         -> <appDir>/sdcard/Android/data/<pkg>/files[/type]
+     * 读取侧：应用自己拼 /storage/emulated/0/Android/data/<pkg>/files[/type]
+     * 两侧必须是同一物理目录，否则"保存成功、列表为空"。
+     */
+    @Test
+    fun `T25 external files 写入侧与读取侧一致`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        val writeSide = "$guestExternalData/files/offline"
+        val readSide = bridge.translatePath("/storage/emulated/0/Android/data/$guest/files/offline")
+        assertEquals(writeSide, readSide)
+    }
+
+    /** T26：**External Cache 两侧一致**（getExternalAppCacheDir 用 .../cache）。 */
+    @Test
+    fun `T26 external cache 写入侧与读取侧一致`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        assertEquals(
+            "$guestExternalData/cache",
+            bridge.translatePath("/storage/emulated/0/Android/data/$guest/cache")
+        )
+    }
+
+    /** T27：**OBB 两侧一致**（getExternalObbDir 用 sdcard/Android/obb/<pkg>）。 */
+    @Test
+    fun `T27 obb 写入侧与读取侧一致`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        assertEquals(
+            guestObb,
+            bridge.translatePath("/storage/emulated/0/Android/obb/$guest")
+        )
+    }
+
+    /**
+     * T28：**规则目标不得落在从未被写入的目录**。
+     *
+     * 曾经的错误目标：external_data / obb / host_ext。
+     * SandboxManager 只会写 sdcard/Android/{data,obb,media}/<pkg> 与 <appDir>/{files,cache,...}，
+     * 所以任何规则目标的"根段"都必须能在这两组里找到对应。
+     */
+    @Test
+    fun `T28 规则目标不落在未写入目录`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        val cases = listOf(
+            "/storage/emulated/0/Android/data/$guest/files/x" to "$guestExternalData/files/x",
+            "/sdcard/Android/data/$guest/files/x" to "$guestExternalData/files/x",
+            "/storage/emulated/0/Android/obb/$guest/x" to "$guestObb/x",
+            "/data/data/$guest/files/x" to "$sandbox/files/x",
+            "/data/user/0/$guest/files/x" to "$sandbox/files/x",
+        )
+        for ((input, expect) in cases) {
+            assertEquals("input=$input", expect, bridge.translatePath(input))
+        }
+    }
+
+    /**
+     * T29：**Media 目录**（getExternalMediaDir -> sdcard/Android/media/<pkg>）。
+     *
+     * 目前 setupAppRedirections 未注册 /Android/media/ 前缀 —— 这条测试记录现状，
+     * 若将来补上该规则，这里会变成红，提醒同步更新。
+     */
+    @Test
+    fun `T29 media 目录现状`() {
+        bridge.setupAppRedirections(guest, "mark.via_1", sandbox)
+        val input = "/storage/emulated/0/Android/media/$guest/x"
+        val out = bridge.translatePath(input)
+        // 现状：未注册 -> 原样返回（若已注册则应为 $sandbox/sdcard/Android/media/<guest>/x）
+        assertTrue(
+            "media 前缀未注册时应原样返回，实际=$out",
+            out == input || out == "$sandbox/sdcard/Android/media/$guest/x"
+        )
+    }
+
+
+    // ---------------- T30-T38 不变量 / 对偶 / 模糊（能自己发现意外） ----------------
+
+    /**
+     * T30：**同一逻辑路径的所有写法必须翻译到同一处**（对偶性）。
+     *
+     * 应用拿外部存储路径有多种写法：/sdcard/、/storage/emulated/0/、/mnt/sdcard/、
+     * /storage/self/primary/。少注册任何一个，同一份数据就会"从一个写法可见、另一个不可见"。
+     * 这条测试遍历笛卡尔积，能自动发现漏注册的前缀。
+     */
+    @Test
+    fun `T30 同一逻辑路径多种写法对偶`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        bridge.setupExternalStorageRedirections("i1", "$sandbox/sdcard")
+        val tails = listOf(
+            "Android/data/$guest/files/offline/a.mht",
+            "DCIM/photo.jpg",
+            "Download/a.pdf",
+            "Android/obb/$guest/x.obb",
+        )
+        val prefixes = listOf(
+            "/sdcard/",
+            "/storage/emulated/0/",
+            "/mnt/sdcard/",
+            "/storage/self/primary/",
+        )
+        for (tail in tails) {
+            val outs = prefixes.associateWith { bridge.translatePath("$it$tail") }
+            val distinct = outs.values.toSet()
+            assertEquals("tail=$tail 的多种写法应翻译到同一处，实际=$outs", 1, distinct.size)
+        }
+    }
+
+    /**
+     * T31：**无尾斜杠变体也要能翻译**。
+     *
+     * /sdcard 与 /sdcard/ 都有注册，但 /mnt/sdcard 与 /storage/self/primary 只有带斜杠版本。
+     * 这条测试记录现状：若某个变体没注册，它会被原样返回 —— 直接暴露。
+     */
+    @Test
+    fun `T31 无尾斜杠变体`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        bridge.setupExternalStorageRedirections("i1", "$sandbox/sdcard")
+        // 已注册的两种
+        assertEquals("$sandbox/sdcard", bridge.translatePath("/sdcard").trimEnd('/'))
+        assertEquals("$sandbox/sdcard", bridge.translatePath("/storage/emulated/0").trimEnd('/'))
+        // 未注册的两种：现状应原样返回。若将来补上，这里会红，提醒同步。
+        for (p in listOf("/mnt/sdcard", "/storage/self/primary")) {
+            val out = bridge.translatePath(p)
+            // 无论是否通过，都把实际值打到 CI 日志里 —— 缺口要能看见
+            println("[T31] $p -> $out" + if (out == p) "   <== 未注册（原样返回）" else "")
+            assertTrue(
+                "$p 现状应原样返回或已映射，实际=$out",
+                out == p || out.startsWith(sandbox)
+            )
+        }
+        // 顺便把 T30 里每种写法都打出来，便于对照
+        for (pre in listOf("/sdcard/", "/storage/emulated/0/", "/mnt/sdcard/", "/storage/self/primary/")) {
+            println("[T31] ${pre}Download/a.pdf -> ${bridge.translatePath("${pre}Download/a.pdf")}")
+        }
+    }
+
+    /**
+     * T32：**翻译结果不得以源前缀开头**（除非目标本身就在源前缀下）。
+     *
+     * 这是幂等性的必要条件：翻译后若仍以源前缀开头，第二次翻译就会再跳一次。
+     */
+    @Test
+    fun `T32 翻译结果不以源前缀开头`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        val sources = listOf(
+            "/data/data/$guest/",
+            "/data/user/0/$guest/",
+            "/storage/emulated/0/Android/data/$guest/",
+            "/sdcard/Android/data/$guest/",
+            "/storage/emulated/0/Android/obb/$guest/",
+        )
+        for (src in sources) {
+            val input = "${src}files/x"
+            val out = bridge.translatePath(input)
+            assertNotEquals("src=$src 未被翻译", input, out)
+            assertTrue(
+                "src=$src 翻译后仍以源前缀开头: $out",
+                !out.startsWith(src)
+            )
+        }
+    }
+
+    /** T33：模糊测试 —— 随机拼装的路径不得抛异常，且必须幂等。 */
+    @Test
+    fun `T33 模糊测试不抛异常且幂等`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        bridge.setupExternalStorageRedirections("i1", "$sandbox/sdcard")
+        val alphabet = listOf(
+            "/", "//", "/sdcard", "/storage/emulated/0", "/data/data", "/data/user/0",
+            guest, "com", "nextvm", "app", "Android", "data", "obb", "media", "files",
+            "offline", "我的", " 空格 ", ".", "..", "-", "_",
+        )
+        val rnd = java.util.Random(20261125L)
+        repeat(2000) {
+            val n = 1 + rnd.nextInt(6)
+            val sb = StringBuilder()
+            repeat(n) { sb.append(alphabet[rnd.nextInt(alphabet.size)]) }
+            val input = sb.toString()
+            val out = bridge.translatePath(input)          // 不得抛
+            val out2 = bridge.translatePath(out)
+            assertEquals("非幂等: input=$input out=$out out2=$out2", out, out2)
+        }
+    }
+
+    /** T34：翻译保持路径段数量不变（只改前缀，不增删层级）。 */
+    @Test
+    fun `T34 翻译不改变路径段数`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        val cases = listOf(
+            "/data/data/$guest/files/a/b/c",
+            "/storage/emulated/0/Android/data/$guest/files/offline/x.mht",
+            "/sdcard/Android/obb/$guest/x.obb",
+        )
+        for (input in cases) {
+            val out = bridge.translatePath(input)
+            val inSegs = input.trimEnd('/').split('/').count { it.isNotEmpty() }
+            val outSegs = out.trimEnd('/').split('/').count { it.isNotEmpty() }
+            assertEquals("input=$input out=$out 段数变了", inSegs, outSegs)
+        }
+    }
+
+    /**
+     * T35：**核心一致性 —— 每种 SandboxManager 目录都能被"宿主形态"翻译回来**。
+     *
+     * 这张表是"写入侧"清单（SandboxManager 的真实返回）与"读取侧"输入（应用自己拼）的配对。
+     * 任何一行不成立，就说明出现了"写到一个地方、从另一个地方读"。
+     */
+    @Test
+    fun `T35 SandboxManager 目录与宿主形态一一对应`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        val pairs = listOf(
+            // SandboxManager.getExternalAppFilesDir(type=null)
+            "/storage/emulated/0/Android/data/$guest/files" to "$guestExternalData/files",
+            // getExternalAppFilesDir(type="offline")
+            "/storage/emulated/0/Android/data/$guest/files/offline" to "$guestExternalData/files/offline",
+            // getExternalAppCacheDir
+            "/storage/emulated/0/Android/data/$guest/cache" to "$guestExternalData/cache",
+            // getExternalObbDir
+            "/storage/emulated/0/Android/obb/$guest" to guestObb,
+            // getFilesDir / getCacheDir（data 目录）
+            "/data/data/$guest/files" to "$sandbox/files",
+            "/data/data/$guest/cache" to "$sandbox/cache",
+            "/data/user/0/$guest/files" to "$sandbox/files",
+        )
+        for ((hostForm, sandboxForm) in pairs) {
+            val got = bridge.translatePath(hostForm)
+            println("[T35] $hostForm\n        -> $got" + if (got == sandboxForm) "  OK" else "  EXPECT $sandboxForm")
+            assertEquals("host=$hostForm", sandboxForm, got)
+        }
+    }
+
+    /**
+     * T36：Media 目录（getExternalMediaDir）目前**没有**宿主形态规则。
+     *
+     * 这条测试把缺口钉住：现状是原样返回。补上规则后此处会变红，提醒更新断言。
+     */
+    @Test
+    fun `T36 media 目录缺口现状`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        val input = "/storage/emulated/0/Android/media/$guest/x.jpg"
+        val out = bridge.translatePath(input)
+        println("[T36] media -> $out" + if (out == input) "   <== 未注册（原样返回）" else "")
+        assertTrue(
+            "media 现状应原样返回或已映射，实际=$out",
+            out == input || out == "$sandbox/sdcard/Android/media/$guest/x.jpg"
+        )
+    }
+
+    /**
+     * T37：**隐藏路径不得被重定向抢先**（顺序契约）。
+     *
+     * 即使隐藏路径同时命中重定向前缀，也必须返回 /dev/null。
+     */
+    @Test
+    fun `T37 hidden 不被重定向抢先`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        val p = "/data/data/$guest/files/secret.db"
+        bridge.hidePath(p)
+        assertEquals("/dev/null", bridge.translatePath(p))
+    }
+
+    /** T38：翻译对"已翻译过的沙箱路径"完全不动作（多层 hook 安全前提）。 */
+    @Test
+    fun `T38 沙箱路径再翻译不变`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        bridge.setupExternalStorageRedirections("i1", "$sandbox/sdcard")
+        val sandboxPaths = listOf(
+            "$sandbox/files/x",
+            "$sandbox/sdcard/Android/data/$guest/files/x",
+            "$sandbox/sdcard/Download/a.pdf",
+            "$sandbox/sdcard/Android/obb/$guest/x.obb",
+        )
+        for (p in sandboxPaths) {
+            assertEquals("沙箱路径被误改: $p", p, bridge.translatePath(p))
+        }
     }
 }

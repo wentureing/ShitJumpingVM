@@ -415,21 +415,21 @@ class NativeHookBridge @Inject constructor() {
             "$sandboxDataDir/"
         )
 
-        // App-specific external storage
-        addPathRedirection(
-            "/storage/emulated/0/Android/data/$guestPackageName/",
-            "$sandboxDataDir/external_data/"
-        )
-        addPathRedirection(
-            "/sdcard/Android/data/$guestPackageName/",
-            "$sandboxDataDir/external_data/"
-        )
+        // App-specific external storage（一次注册两式：长路径 + /sdcard 短路径）
+        //
+        // 目标必须与 SandboxManager 的返回完全一致，否则"写到一个地方、从另一个地方读"：
+        //   getExternalAppFilesDir -> <appDir>/sdcard/Android/data/<pkg>/files[/type]
+        //   getExternalAppCacheDir -> <appDir>/sdcard/Android/data/<pkg>/cache
+        // 实测过：早先目标写成 $sandboxDataDir/external_data/，那个目录从来没被写入过，
+        // 于是应用自己拼 /storage/emulated/0/Android/data/<pkg>/ 去列举时会得到空目录。
+        val guestExternalData = "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
+        addPathRedirection("/storage/emulated/0/Android/data/$guestPackageName/", guestExternalData)
+        addPathRedirection("/sdcard/Android/data/$guestPackageName/", guestExternalData)
 
-        // OBB storage
-        addPathRedirection(
-            "/storage/emulated/0/Android/obb/$guestPackageName/",
-            "$sandboxDataDir/obb/"
-        )
+        // OBB storage —— 同理，getExternalObbDir 返回 <appDir>/sdcard/Android/obb/<pkg>
+        val guestObb = "$sandboxDataDir/sdcard/Android/obb/$guestPackageName/"
+        addPathRedirection("/storage/emulated/0/Android/obb/$guestPackageName/", guestObb)
+        addPathRedirection("/sdcard/Android/obb/$guestPackageName/", guestObb)
 
 
         // 宿主包名 external 兜底。说明见 docs/设计/设计-按进程区分的宿主路径兜底.md
