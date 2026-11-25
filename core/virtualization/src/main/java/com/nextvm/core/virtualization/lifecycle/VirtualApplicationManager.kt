@@ -426,6 +426,8 @@ class VirtualApplicationManager @Inject constructor(
     }
 
     // instanceId -> ApplicationRecord
+    private var guestDiagnosticsInstalled = false
+
     private val applications = ConcurrentHashMap<String, ApplicationRecord>()
 
     /**
@@ -772,6 +774,28 @@ class VirtualApplicationManager @Inject constructor(
     }
 
     private fun registerBreadcrumbCallbacks(app: Application) {
+        // ===== guest 侧诊断（sandboxsensor）=====
+        // guest 进程用的是 guest 自己的 Application（如 mark.via.BrowserApp），
+        // NextVmApplication.onCreate 在这里不执行 -> 必须在 bind 路径上装。
+        // 路径用 guest 的 filesDir（已被 VirtualContext 重定向到沙箱）。
+        runCatching {
+            if (!guestDiagnosticsInstalled) {
+                guestDiagnosticsInstalled = true
+                com.nextvm.core.common.diagnostics.DiagnosticsHolder.install(
+                    com.nextvm.core.common.diagnostics.DiagnosticsRouter(
+                        listOf(
+                            com.nextvm.core.common.diagnostics.FileSink(
+                                java.io.File(app.filesDir, "checks.log")
+                            )
+                        )
+                    )
+                )
+                com.nextvm.core.virtualization.engine.LifecycleRecorder.install(app)
+                GuestBreadcrumb.log("guest diagnostics installed")
+            }
+        }.onFailure {
+            GuestBreadcrumb.log("guest diagnostics install failed: " + it.message)
+        }
         startWatchdog()
         try {
             app.registerActivityLifecycleCallbacks(
