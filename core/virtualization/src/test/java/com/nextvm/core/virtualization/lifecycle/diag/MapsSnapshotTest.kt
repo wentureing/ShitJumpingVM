@@ -56,11 +56,11 @@ class MapsSnapshotTest {
     }
 
     @Test
-    fun `G3 大匿名段按 0x80000..0x200000 判定`() {
+    fun `G3 大匿名段按尺寸区间判定`() {
         val text = listOf(
             line("100000-180000", "rwxp"),          // 0x80000 边界内
             line("200000-480000", "rwxp"),          // 0x280000 超上限
-            line("500000-4FF000", "rwxp"),          // 0x4FF000 超上限
+            line("500000-9FF000", "rwxp"),          // 0x4FF000 超上限
         ).joinToString("\n")
 
         val s = MapsSnapshot.parse(text)
