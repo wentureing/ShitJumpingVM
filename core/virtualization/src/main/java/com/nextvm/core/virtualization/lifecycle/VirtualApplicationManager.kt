@@ -792,6 +792,9 @@ class VirtualApplicationManager @Inject constructor(
                 )
                 com.nextvm.core.virtualization.engine.LifecycleRecorder.install(app)
                 GuestBreadcrumb.log("guest diagnostics installed")
+                // Holder 就绪后再 dump —— 规则注册(71ms)早于 Holder install(78ms)，
+                // 在 setupAppRedirections 里 dump 会被 NoOp 静默丢弃。
+                runCatching { nativeHookBridge.dumpFsStats("bind:" + app.packageName) }
             }
         }.onFailure {
             GuestBreadcrumb.log("guest diagnostics install failed: " + it.message)

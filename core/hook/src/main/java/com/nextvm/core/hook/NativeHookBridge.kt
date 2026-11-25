@@ -446,7 +446,9 @@ class NativeHookBridge @Inject constructor() {
 
         Timber.tag(TAG).d("App redirections set for $guestPackageName ($instanceId)")
 
-        dumpFsStats("after-redirections:$guestPackageName")
+        // 注意：这里不能 dumpFsStats —— 此刻 DiagnosticsHolder 还没 install
+        //       （实测 71ms 注册规则 / 78ms 才装 Holder）。
+        //       改由 VirtualApplicationManager.registerBreadcrumbCallbacks 在装完之后调。
     }
 
     /**
