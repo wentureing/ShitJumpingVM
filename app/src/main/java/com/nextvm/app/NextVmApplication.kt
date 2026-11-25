@@ -23,6 +23,9 @@ class NextVmApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // ===== 标准行为记录：Android 官方生命周期回调旁听启动编排顺序 =====
+        com.nextvm.core.virtualization.engine.LifecycleRecorder.install(this)
+
         // 1. Initialize logging
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
