@@ -445,8 +445,34 @@ class NativeHookBridge @Inject constructor() {
         }
 
         Timber.tag(TAG).d("App redirections set for $guestPackageName ($instanceId)")
+
+        dumpFsStats("after-redirections:$guestPackageName")
     }
 
+    /**
+     * 把文件系统 hook 的计数与最近记录写进 checks.log。
+     * 为什么不写 logcat：guest 进程的 native 日志在本设备会被吞；
+     * checks.log 走诊断层落文件，能可靠导出。
+     */
+    fun dumpFsStats(stage: String) {
+        if (!nativeHooksAvailable) return
+        runCatching {
+            val stats = nativeGetFsStats()
+            if (!stats.isNullOrEmpty()) {
+                com.nextvm.core.common.diagnostics.DiagnosticsHolder.stage(
+                    "fs.stats", "$stage $stats"
+                )
+            }
+            val recent = nativeGetFsRecent()
+            if (!recent.isNullOrEmpty()) {
+                recent.lineSequence().filter { it.isNotBlank() }.take(12).forEach {
+                    com.nextvm.core.common.diagnostics.DiagnosticsHolder.stage(
+                        "fs.recent", "$stage $it"
+                    )
+                }
+            }
+        }
+    }
     /**
      * Set up general external/shared storage redirections for a virtual app.
      *
@@ -918,6 +944,14 @@ class NativeHookBridge @Inject constructor() {
 
     /** Clear all native-level path redirections. */
     private external fun nativeClearPathRedirections()
+
+    /** 文件系统 hook 的计数快照，见 native-hook.cpp 的 FsOpStats。 */
+    external fun nativeGetFsStats(): String?
+
+    /** 最近 N 条「命中翻译 / 失败」的 fs 记录（多行）。 */
+    external fun nativeGetFsRecent(): String?
+
+    external fun nativeResetFsStats()
 
     /** Set up /proc/self spoofing at native level. */
     private external fun nativeSpoofProcSelf(pid: Int, packageName: String)

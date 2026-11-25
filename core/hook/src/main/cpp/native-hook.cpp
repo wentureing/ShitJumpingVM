@@ -1296,6 +1296,57 @@ static pid_t hooked_fork() {
     return r;
 }
 
+/* ===== 文件系统 hook 观测设施（不依赖 logcat：guest 的 native 日志会被设备吞） =====
+ * total/translated/fail 三类计数；环形缓冲只在「命中翻译」或「失败」时记录；
+ * LOGD 限流前 24 条，其余只计数。
+ */
+struct FsOpStats {
+    std::atomic<int> total{0};
+    std::atomic<int> translated{0};
+    std::atomic<int> fail{0};
+};
+
+static FsOpStats g_fs_mkdir_stats;
+static FsOpStats g_fs_opendir_stats;
+static FsOpStats g_fs_unlink_stats;
+static FsOpStats g_fs_rename_stats;
+static std::atomic<int> g_fs_logs{0};
+
+static const int FS_RECENT_CAP = 32;
+struct FsRecord {
+    char op[12];
+    char from[192];
+    char to[192];
+    int err;
+};
+static FsRecord g_fs_recent[FS_RECENT_CAP];
+static std::atomic<int> g_fs_recent_seq{0};
+static std::mutex g_fs_recent_mu;
+
+static void fs_record(const char* op, const char* from, const char* to, int err) {
+    std::lock_guard<std::mutex> guard(g_fs_recent_mu);
+    int seq = g_fs_recent_seq.fetch_add(1);
+    FsRecord& r = g_fs_recent[seq % FS_RECENT_CAP];
+    snprintf(r.op, sizeof(r.op), "%s", op == nullptr ? "?" : op);
+    snprintf(r.from, sizeof(r.from), "%s", from == nullptr ? "" : from);
+    snprintf(r.to, sizeof(r.to), "%s", to == nullptr ? "" : to);
+    r.err = err;
+}
+
+static void fs_note(FsOpStats* st, const char* op, const char* from,
+                    const char* to, int err) {
+    st->total.fetch_add(1);
+    bool hit = (to != nullptr);
+    if (hit) st->translated.fetch_add(1);
+    if (err != 0) st->fail.fetch_add(1);
+    if (hit || err != 0) fs_record(op, from, to, err);
+    int n = ++g_fs_logs;
+    if (n <= 24) {
+        if (hit) LOGD("%s: %s -> %s%s", op, from, to, err ? " (fail)" : "");
+        else if (err) LOGD("%s: %s (fail errno=%d)", op, from, err);
+    }
+}
+
 static DIR* hooked_opendir(const char* path) {
     if (path != nullptr && strstr(path, "/proc") != nullptr) {
         static int logged = 0;
@@ -1310,10 +1361,15 @@ static DIR* hooked_opendir(const char* path) {
     // 目录列举也必须走重定向：否则应用列的是宿主目录，而文件写在沙箱
     std::string redirected = redirect_path(path);
     if (!redirected.empty()) {
-        LOGD("opendir: %s -> %s", path, redirected.c_str());
-        return real_opendir(redirected.c_str());
+        DIR* d = real_opendir(redirected.c_str());
+        fs_note(&g_fs_opendir_stats, "opendir", path, redirected.c_str(),
+                d == nullptr ? errno : 0);
+        return d;
     }
-    return real_opendir(path);
+    DIR* d0 = real_opendir(path);
+    if (d0 == nullptr) fs_note(&g_fs_opendir_stats, "opendir", path, nullptr, errno);
+    else g_fs_opendir_stats.total.fetch_add(1);
+    return d0;
 }
 
 /* mkdir/mkdirat: 只建最后一级（AOSP 语义），父目录缺失时返回 -1/ENOENT。 */
@@ -1321,10 +1377,15 @@ static int hooked_mkdir(const char* path, mode_t mode) {
     if (real_mkdir == nullptr) { errno = ENOSYS; return -1; }
     std::string redirected = redirect_path(path);
     if (!redirected.empty()) {
-        LOGD("mkdir: %s -> %s", path, redirected.c_str());
-        return real_mkdir(redirected.c_str(), mode);
+        int r = real_mkdir(redirected.c_str(), mode);
+        fs_note(&g_fs_mkdir_stats, "mkdir", path, redirected.c_str(),
+                r == 0 ? 0 : errno);
+        return r;
     }
-    return real_mkdir(path, mode);
+    int r0 = real_mkdir(path, mode);
+    if (r0 == 0) g_fs_mkdir_stats.total.fetch_add(1);
+    else fs_note(&g_fs_mkdir_stats, "mkdir", path, nullptr, errno);
+    return r0;
 }
 
 static int hooked_mkdirat(int dirfd, const char* path, mode_t mode) {
@@ -1344,10 +1405,15 @@ static int hooked_unlink(const char* path) {
     if (real_unlink == nullptr) { errno = ENOSYS; return -1; }
     std::string redirected = redirect_path(path);
     if (!redirected.empty()) {
-        LOGD("unlink: %s -> %s", path, redirected.c_str());
-        return real_unlink(redirected.c_str());
+        int r = real_unlink(redirected.c_str());
+        fs_note(&g_fs_unlink_stats, "unlink", path, redirected.c_str(),
+                r == 0 ? 0 : errno);
+        return r;
     }
-    return real_unlink(path);
+    int r0 = real_unlink(path);
+    if (r0 == 0) g_fs_unlink_stats.total.fetch_add(1);
+    else fs_note(&g_fs_unlink_stats, "unlink", path, nullptr, errno);
+    return r0;
 }
 
 static int hooked_unlinkat(int dirfd, const char* path, int flags) {
@@ -1369,10 +1435,11 @@ static int hooked_rename(const char* oldpath, const char* newpath) {
     std::string dstR = redirect_path(newpath);
     const char* src = srcR.empty() ? oldpath : srcR.c_str();
     const char* dst = dstR.empty() ? newpath : dstR.c_str();
-    if (!srcR.empty() || !dstR.empty()) {
-        LOGD("rename: %s -> %s (%s -> %s)", oldpath, newpath, src, dst);
-    }
-    return real_rename(src, dst);
+    int r = real_rename(src, dst);
+    bool hit = !srcR.empty() || !dstR.empty();
+    fs_note(&g_fs_rename_stats, "rename", oldpath, hit ? dst : nullptr,
+            r == 0 ? 0 : errno);
+    return r;
 }
 
 /**
@@ -2229,6 +2296,64 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeInit(
 /**
  * Add a path redirection rule.
  */
+
+/* 文件系统 hook 的计数快照 */
+JNIEXPORT jstring JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeGetFsStats(
+    JNIEnv* env, jobject thiz)
+{
+    (void)thiz;
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "mkdir=%d/%d/%d opendir=%d/%d/%d unlink=%d/%d/%d rename=%d/%d/%d logs=%d",
+             g_fs_mkdir_stats.total.load(), g_fs_mkdir_stats.translated.load(),
+             g_fs_mkdir_stats.fail.load(),
+             g_fs_opendir_stats.total.load(), g_fs_opendir_stats.translated.load(),
+             g_fs_opendir_stats.fail.load(),
+             g_fs_unlink_stats.total.load(), g_fs_unlink_stats.translated.load(),
+             g_fs_unlink_stats.fail.load(),
+             g_fs_rename_stats.total.load(), g_fs_rename_stats.translated.load(),
+             g_fs_rename_stats.fail.load(),
+             g_fs_logs.load());
+    return env->NewStringUTF(buf);
+}
+
+/* 最近 N 条「命中翻译 / 失败」的记录，每行：op err=<n> from -> to */
+JNIEXPORT jstring JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeGetFsRecent(
+    JNIEnv* env, jobject thiz)
+{
+    (void)thiz;
+    std::string out;
+    {
+        std::lock_guard<std::mutex> guard(g_fs_recent_mu);
+        int count = g_fs_recent_seq.load();
+        int start = count > FS_RECENT_CAP ? count - FS_RECENT_CAP : 0;
+        for (int i = start; i < count; ++i) {
+            FsRecord& r = g_fs_recent[i % FS_RECENT_CAP];
+            char line[420];
+            snprintf(line, sizeof(line), "%s err=%d %s -> %s\n",
+                     r.op, r.err, r.from, r.to);
+            out += line;
+        }
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeResetFsStats(
+    JNIEnv* env, jobject thiz)
+{
+    (void)env; (void)thiz;
+    g_fs_mkdir_stats = FsOpStats();
+    g_fs_opendir_stats = FsOpStats();
+    g_fs_unlink_stats = FsOpStats();
+    g_fs_rename_stats = FsOpStats();
+    g_fs_logs.store(0);
+    std::lock_guard<std::mutex> guard(g_fs_recent_mu);
+    g_fs_recent_seq.store(0);
+}
+
 JNIEXPORT void JNICALL
 Java_com_nextvm_core_hook_NativeHookBridge_nativeAddPathRedirection(
     JNIEnv* env, jobject thiz, jstring sourcePath, jstring targetPath)
