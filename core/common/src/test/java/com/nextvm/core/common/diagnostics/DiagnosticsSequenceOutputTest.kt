@@ -7,7 +7,7 @@ import org.junit.Test
  * 用新日志系统产出一段**完整的验证序列**并打印到 stdout（CI 日志可见）。
  *
  * 目的：
- *   1) 证明 Diagnostics + RecordingSink 能端到端产出 golden 格式
+ *   1) 证明 Diagnostics + RecordingSink 能端到端产出 golden 格式（共 23 条）
  *   2) 给出三条关键路径的**期望输出模板**，供真机首轮对照
  *   3) 这段输出就是将来 checks-golden 的雏形
  *
@@ -97,9 +97,9 @@ class DiagnosticsSequenceOutputTest {
         println("===== END =====")
 
         // 结构断言：21 条 check、errors 段为空
-        assertTrue("check 数量应为 21，实际=${sink.checks.size}", sink.checks.size == 21)
+        assertTrue("check 数量应为 23，实际=${sink.checks.size}", sink.checks.size == 23)
         assertTrue("errors 段必须为空", sink.errorLines.isEmpty())
         assertTrue("序号应连续", sink.checks.first().startsWith("0001 "))
-        assertTrue("末条序号应为 0021", sink.checks.last().startsWith("0021 "))
+        assertTrue("末条序号应为 0023", sink.checks.last().startsWith("0023 "))
     }
 }
