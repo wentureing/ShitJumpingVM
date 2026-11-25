@@ -6871,6 +6871,9 @@ static void java_io_resolve(JNIEnv* env, jstring path, std::string* out,
 /* 前置声明：open/access 定义在本文件较早位置，而 java_io_throw_npe 定义在后面 */
 static void java_io_throw_npe(JNIEnv* env, const char* msg);  // java_io_throw_npe_forward
 
+/* 前置声明：定义在文件更下方，open 的日志过滤会用到 */
+static bool is_container_diag_path(const std::string& p);  // is_container_diag_path_forward
+
 static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
                                       jint flags, jint mode) {
     if (path == nullptr) {
@@ -6889,12 +6892,15 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
         return nullptr;
     }
 
-    int n = ++g_java_io_open_logs;
     g_java_io_open_total.fetch_add(1);
-    if (n <= 200) {
-        LOGI("JavaIo open%s: %s (flags=0x%x)",
-             translated ? " [xlat]" : "", real.c_str(),
-             static_cast<unsigned>(flags));
+    // 容器自己的诊断文件不计入日志配额，否则会把真正想看的 guest 访问挤掉
+    if (!is_container_diag_path(real)) {
+        int n = ++g_java_io_open_logs;
+        if (n <= 200) {
+            LOGI("JavaIo open%s: %s (flags=0x%x)",
+                 translated ? " [xlat]" : "", real.c_str(),
+                 static_cast<unsigned>(flags));
+        }
     }
 
     // v148：与 AOSP 一致 —— EINTR 重试
@@ -7128,6 +7134,26 @@ static jlong hooked_java_linux_opendir(JNIEnv* env, jclass, jstring path) {
  */
 
 /* 取 File 的路径字符串（File.getPath()），调用方负责 DeleteLocalRef */
+/*
+ * 容器自己的诊断日志文件：DebugTrace / Diagnostics / Breadcrumb 都写在
+ * <containerDataDir>/files/ 下。guest 进程里这些文件同样会被 hooked_java_linux_open
+ * 与 hooked_ufs_list0 拦到，且写入频率极高（每次 DebugTrace.detail 都 open 一次）。
+ *
+ * 不排除它们的话，前 200 条 hook 日志会被 debug-trace.log 占满，
+ * 真正想看的 guest 文件访问反而看不到 —— 实测过：整页都是
+ * `JavaIo open: .../debug-trace.log (flags=0x441)`。
+ */
+static bool is_container_diag_path(const std::string& p) {
+    static const char* kMarkers[] = {
+        "/debug-trace.log", "/checks.log", "/breadcrumb-",
+        "/stackdump-", "/webviewwarm-", "/webviewwatch-",
+    };
+    for (const char* m : kMarkers) {
+        if (p.find(m) != std::string::npos) return true;
+    }
+    return false;
+}
+
 static jstring ufs_get_path(JNIEnv* env, jobject file) {
     if (file == nullptr) return nullptr;
     jclass fileCls = env->GetObjectClass(file);
