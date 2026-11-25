@@ -6879,6 +6879,24 @@ static jboolean hooked_java_linux_access(JNIEnv* env, jclass, jstring path, jint
     }
     return JNI_TRUE;
 }
+/*
+ * 让 Java 层 hook 自己拿到真实函数指针。
+ *
+ * 为什么需要：install_java_io_hooks 在 initNativeHooks 的 Phase 1 执行，
+ * 而 real_* 由 install_plt_hooks（Phase 2）填充 —— 时序上 Java hook 更早，
+ * 此刻 real_mkdir/unlink/rename/opendir 全是 nullptr。
+ * 原来靠 ::mkdir 直调 libc 兜底；但那依赖「自己的库不被 GOT patch」这一前提
+ * （install_hooks_callback 用 strstr(name, "libnextvm") 跳过）。
+ * 库名一变，::mkdir 就会调到 hooked_mkdir，而那时 real_mkdir 仍为 null -> ENOSYS。
+ * 这里显式 dlsym，让 Java 层 hook 不依赖那个前提。
+ */
+static void java_io_ensure_real() {
+    if (real_mkdir == nullptr) real_mkdir = (orig_mkdir_t)dlsym(RTLD_DEFAULT, "mkdir");
+    if (real_unlink == nullptr) real_unlink = (orig_unlink_t)dlsym(RTLD_DEFAULT, "unlink");
+    if (real_rename == nullptr) real_rename = (orig_rename_t)dlsym(RTLD_DEFAULT, "rename");
+    if (real_opendir == nullptr) real_opendir = (orig_opendir_t)dlsym(RTLD_DEFAULT, "opendir");
+}
+
 
 /*
  * ===== Java 层文件系统写/列举的唯一覆盖点 =====
@@ -6991,6 +7009,7 @@ static jlong hooked_java_linux_opendir(JNIEnv* env, jclass, jstring path) {
 
 
 static bool install_java_io_hooks(JNIEnv* env, bool translate) {
+    java_io_ensure_real();
     g_java_io_translate.store(translate);
 
     jclass cls = env->FindClass("libcore/io/Linux");
