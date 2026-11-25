@@ -6856,13 +6856,26 @@ static void java_io_resolve(JNIEnv* env, jstring path, std::string* out,
     env->ReleaseStringUTFChars(path, raw);
 }
 
+/* 前置声明：open/access 定义在本文件较早位置，而 java_io_throw_npe 定义在后面 */
+static void java_io_throw_npe(JNIEnv* env, const char* msg);  // java_io_throw_npe_forward
+
 static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
                                       jint flags, jint mode) {
-    if (path == nullptr) return nullptr;
+    if (path == nullptr) {
+        // AOSP 抛 NullPointerException；绝不能返回 null ——
+        // IoUtils.canOpenReadOnly 会对返回值调 Os.close()，close(null) 在
+        // BlockGuardOs 里触发 fd.isSocket$() -> NPE -> FATAL EXCEPTION: main。
+        java_io_throw_npe(env, "open: path == null");
+        return nullptr;
+    }
     std::string real;
     bool translated = false;
     java_io_resolve(env, path, &real, &translated);
-    if (real.empty()) return nullptr;
+    if (real.empty()) {
+        // 同上：必须抛 ErrnoException 让调用方 catch，而不是返回 null
+        java_io_throw_errno(env, "open", EINVAL, "");
+        return nullptr;
+    }
 
     int n = ++g_java_io_open_logs;
     g_java_io_open_total.fetch_add(1);
@@ -6893,11 +6906,17 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
 }
 
 static jboolean hooked_java_linux_access(JNIEnv* env, jclass, jstring path, jint mode) {
-    if (path == nullptr) return JNI_FALSE;
+    if (path == nullptr) {
+        java_io_throw_npe(env, "access: path == null");
+        return JNI_FALSE;
+    }
     std::string real;
     bool translated = false;
     java_io_resolve(env, path, &real, &translated);
-    if (real.empty()) return JNI_FALSE;
+    if (real.empty()) {
+        java_io_throw_errno(env, "access", EINVAL, "");
+        return JNI_FALSE;
+    }
 
     int rc;
     do {
