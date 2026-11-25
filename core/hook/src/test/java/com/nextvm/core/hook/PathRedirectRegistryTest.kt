@@ -59,9 +59,12 @@ class PathRedirectRegistryTest {
     }
 
     @Test
-    fun `真实规则 - 其它应用路径不翻译`() {
+    fun `真实规则 - 其它应用路径`() {
         val r = realWorldRegistry()
-        assertEquals("/sdcard/Android/data/other.app/x", r.translate("/sdcard/Android/data/other.app/x"))
+        val sdcard = "/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/sdcard"
+        // /sdcard/ 是**通配**规则：其它应用的 sdcard 路径同样被重定向到沙箱
+        assertEquals("$sdcard/Android/data/other.app/x", r.translate("/sdcard/Android/data/other.app/x"))
+        // /data/data/ 没有通配规则，只有具体包名的规则 -> 其它应用不翻译
         assertEquals("/data/data/other.app/x", r.translate("/data/data/other.app/x"))
     }
 
