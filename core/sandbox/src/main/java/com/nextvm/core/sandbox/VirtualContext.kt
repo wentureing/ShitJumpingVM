@@ -205,7 +205,14 @@ class VirtualContext(
 
     @Suppress("DEPRECATION")
     override fun getExternalMediaDirs(): Array<File> {
-        return arrayOf(sandboxManager.getExternalMediaDir(instanceId, guestPackageName))
+        val sandboxDir = sandboxManager.getExternalMediaDir(instanceId, guestPackageName)
+        return arrayOf(
+            if (pathFidelity) {
+                File(VirtualConstants.syntheticMediaDir(guestPackageName))
+            } else {
+                sandboxDir
+            }
+        )
     }
 
     override fun getObbDir(): File {

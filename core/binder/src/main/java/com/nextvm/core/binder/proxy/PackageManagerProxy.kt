@@ -751,6 +751,9 @@ class PackageManagerProxy(
             // v135-pathfidelity rules registered at guest bind.
             if (VirtualConstants.isPathFidelityGuest(app.packageName)) {
                 dataDir = VirtualConstants.syntheticDataDir(app.packageName)
+                // 加密存储目录同样会暴露沙箱，跟 dataDir 一起合成（真机两者常常相同）
+                deviceProtectedDataDir = dataDir
+                credentialProtectedDataDir = dataDir
                 nativeLibraryDir = VirtualConstants.syntheticLibDir(app.packageName)
                 val synthApk = VirtualConstants.syntheticApkPath(app.packageName)
                 sourceDir = synthApk

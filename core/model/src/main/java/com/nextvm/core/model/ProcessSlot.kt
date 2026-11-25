@@ -198,6 +198,10 @@ object VirtualConstants {
     fun syntheticExternalCacheDir(packageName: String): String =
         "/storage/emulated/0/Android/data/$packageName/cache"
 
+    /** 合成 media 目录（getExternalMediaDirs） */
+    fun syntheticMediaDir(packageName: String): String =
+        "/storage/emulated/0/Android/media/$packageName"
+
     /** 合成 OBB 目录 */
     fun syntheticObbDir(packageName: String): String =
         "/storage/emulated/0/Android/obb/$packageName"

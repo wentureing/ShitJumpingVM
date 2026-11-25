@@ -453,6 +453,16 @@ class NativeHookBridge @Inject constructor() {
         )
 
 
+        // media 目录 —— getExternalMediaDir 返回 <appDir>/sdcard/Android/media/<pkg>
+        val guestMedia = "$sandboxDataDir/sdcard/Android/media/$guestPackageName/"
+        addPathRedirection("/storage/emulated/0/Android/media/$guestPackageName/", guestMedia)
+        addPathRedirection("/sdcard/Android/media/$guestPackageName/", guestMedia)
+        addPathRedirection(
+            "/storage/emulated/0/Android/media/$guestPackageName",
+            guestMedia.trimEnd('/')
+        )
+        addPathRedirection("/sdcard/Android/media/$guestPackageName", guestMedia.trimEnd('/'))
+
         // 宿主包名 external 兜底。说明见 docs/设计/设计-按进程区分的宿主路径兜底.md
         //
         // 目标必须是 <sandbox>/sdcard/Android/data/<guest>，不能是 host_ext：
