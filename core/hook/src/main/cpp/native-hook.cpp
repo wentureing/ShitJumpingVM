@@ -7429,8 +7429,19 @@ static jobjectArray hooked_ufs_list0(JNIEnv* env, jclass, jobject file) {
     std::vector<std::string> names;
     for (;;) {
         errno = 0;
-        struct dirent* e = readdir(d);
-        if (e == nullptr) break;
+        struct dirent64* e = readdir64(d);   // AOSP 用 readdir64；用 readdir 会在 64 位上有 ABI 不匹配
+        if (e == nullptr) {
+            // readdir 返回 null 有两种情况：遍历结束（errno 不动/为 0），或出错。
+            // 旧实现直接 break，把错误当成「目录为空」—— 这是「文件在但列表空」的
+            // 一个可疑根因，所以这里必须把 errno 打出来。
+            if (errno != 0) {
+                int rd_err = errno;
+                LOGE("ufs list0: readdir err=%d (%s) on %s", rd_err, strerror(rd_err), real.c_str());
+                g_java_io_fs_fail.fetch_add(1);
+                java_io_record("list0", real.c_str(), rd_err, 0);
+            }
+            break;
+        }
         const char* n = e->d_name;
         if (n == nullptr) continue;
         if (strcmp(n, ".") == 0 || strcmp(n, "..") == 0) continue;
