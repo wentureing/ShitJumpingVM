@@ -55,9 +55,24 @@ dependencies {
 }
 
 // 打印每个测试的耗时（CI 定位"哪个类慢"用；本地同样输出，无副作用）。
-tasks.withType<Test>().configureEach {
-    afterTest { desc, result ->
-        val ms = result.endTime - result.startTime
-        println("TESTTIME ${desc.className}#${desc.displayName} ${ms}ms ${result.resultType}")
-    }
+// 用类型化 TestListener：`afterTest { desc, result -> }` 是 Groovy Closure API，Kotlin DSL 无法推断参数类型。
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    addTestListener(object : org.gradle.api.tasks.testing.TestListener {
+        override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+        override fun afterSuite(
+            suite: org.gradle.api.tasks.testing.TestDescriptor,
+            result: org.gradle.api.tasks.testing.TestResult,
+        ) = Unit
+        override fun beforeTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+        override fun afterTest(
+            testDescriptor: org.gradle.api.tasks.testing.TestDescriptor,
+            result: org.gradle.api.tasks.testing.TestResult,
+        ) {
+            val ms = result.endTime - result.startTime
+            println(
+                "TESTTIME ${testDescriptor.className}#${testDescriptor.displayName} " +
+                    "${ms}ms ${result.resultType}"
+            )
+        }
+    })
 }
