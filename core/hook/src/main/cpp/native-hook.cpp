@@ -7188,6 +7188,53 @@ static jboolean hooked_ufs_createFileExclusively0(JNIEnv* env, jclass, jstring j
     return JNI_TRUE;
 }
 
+/*
+ * File.exists() / isFile() / isDirectory() / canRead() / canWrite() 全部走这个方法。
+ * 不 hook 它 -> 存在性检查看的是未翻译的宿主路径 -> 沙箱里的文件被判为"不存在"。
+ *
+ * AOSP 的位掩码（java.io.FileSystem）：
+ *   BA_EXISTS    = 0x01
+ *   BA_REGULAR   = 0x02
+ *   BA_DIRECTORY = 0x04
+ *   BA_HIDDEN    = 0x08
+ * 失败返回 0（不抛异常）。
+ */
+static jint hooked_ufs_getBooleanAttributes0(JNIEnv* env, jclass, jstring jpath) {
+    if (jpath == nullptr) return 0;
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    if (real.empty()) return 0;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    struct stat st;
+    int r;
+    do {
+        r = (real_stat != nullptr) ? real_stat(real.c_str(), &st) : ::stat(real.c_str(), &st);
+    } while (r == -1 && errno == EINTR);
+
+    if (r == -1) {
+        int err = errno;
+        // ENOENT / ENOTDIR 是"正常的不存在"，不算失败，也别刷环形缓冲
+        if (err != ENOENT && err != ENOTDIR) {
+            g_java_io_fs_fail.fetch_add(1);
+            java_io_record("getBooleanAttributes0", real.c_str(), err, 0);
+        }
+        return 0;
+    }
+
+    int attrs = 0x01;                                   // BA_EXISTS
+    if (S_ISREG(st.st_mode)) attrs |= 0x02;              // BA_REGULAR
+    if (S_ISDIR(st.st_mode)) attrs |= 0x04;              // BA_DIRECTORY
+    const char* base = strrchr(real.c_str(), '/');
+    if (base != nullptr && base[1] == '.') attrs |= 0x08; // BA_HIDDEN（简化：点开头）
+    if (translated) java_io_record("getBooleanAttributes0", real.c_str(), 0, attrs);
+    return static_cast<jint>(attrs);
+}
+
+
 
 
 static bool install_java_io_hooks(JNIEnv* env, bool translate) {
@@ -7260,6 +7307,9 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
                 {const_cast<char*>("createFileExclusively0"),
                  const_cast<char*>("(Ljava/lang/String;)Z"),
                  reinterpret_cast<void*>(hooked_ufs_createFileExclusively0)},
+                {const_cast<char*>("getBooleanAttributes0"),
+                 const_cast<char*>("(Ljava/lang/String;)I"),
+                 reinterpret_cast<void*>(hooked_ufs_getBooleanAttributes0)},
             };
             const int n = static_cast<int>(sizeof(ufsMethods) / sizeof(ufsMethods[0]));
             for (int i = 0; i < n; ++i) {
