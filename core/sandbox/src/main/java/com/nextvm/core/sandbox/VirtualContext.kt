@@ -61,7 +61,7 @@ class VirtualContext(
     private val contentPathsUseReal: Boolean = false
 
     private fun contentDir(sandboxDir: File, synthetic: () -> File): File =
-        if (pathFidelity && !contentPathsUseReal) synthetic() else sandboxDir
+        if (shouldUseSyntheticContent(pathFidelity, contentPathsUseReal)) synthetic() else sandboxDir
 
 
     /** Cached meta-data bundle from guest APK (parsed once) */
@@ -656,3 +656,15 @@ class VirtualContext(
         return guestTheme!!
     }
 }
+
+/**
+ * 内容目录是否用合成路径（`contentDir` 的唯一判据）。
+ *
+ * 抽成包级纯函数的原因：`VirtualContext` 需要 Android 运行时才能构造，
+ * 而"白名单/豁免是否生效"必须能在纯 JVM 里自动化验证。
+ * 说明见 docs/代码镜像/core/sandbox/VirtualContext.md
+ */
+internal fun shouldUseSyntheticContent(
+    pathFidelity: Boolean,
+    contentPathsUseReal: Boolean,
+): Boolean = pathFidelity && !contentPathsUseReal

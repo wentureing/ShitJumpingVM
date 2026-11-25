@@ -170,21 +170,22 @@ object VirtualConstants {
      * **没有** pathFidelity 分支，仍返回 <sandbox>/sdcard/Android/data/<pkg>/...，
      * 所以即使在本白名单里，外部存储仍然暴露沙箱。
      */
-    private val PATH_FIDELITY_WHITELIST: Set<String> = setOf(
-        // 原始定向对抗目标（com.greenpoint.android.mc10086.activity）
-        CM_PACKAGE,
-        // via：验证 file:// 与 WebView MIME 行为（原先 pathFidelity 只对 CM_PACKAGE 开）
-        "mark.via",
-    )
+    /**
+     * 允许产生合成路径的**内置默认**（仅当配置文件尚未加载时回落，例如容器早期）。
+     *
+     * 线上以 `path_spoof.conf` 的「欺骗名单」为准 —— **不要在这里加包**，
+     * 否则又多一处"定死"。见 docs/代码镜像/core/model/PathSpoofConfig.md
+     */
+    private val PATH_FIDELITY_WHITELIST: Set<String> = setOf(CM_PACKAGE)
 
     /**
      * 是否对 packageName 启用 pathFidelity（= 是否产生合成路径）。
      *
-     * **豁免优先**：PathSpoofConfig 里的豁免名单优先级最高，命中则一律返回 false，
-     * 不产生任何合成路径（但仍隔离到沙箱，规则由 NativeHookBridge 照常注册）。
+     * 优先级：豁免名单 > 配置文件的欺骗名单 > 内置默认。
      */
     fun isPathFidelityGuest(packageName: String): Boolean {
         if (PathSpoofConfig.isGuestExempt(packageName)) return false
+        if (PathSpoofConfig.isLoaded()) return PathSpoofConfig.isSpoofListed(packageName)
         return packageName in PATH_FIDELITY_WHITELIST
     }
 

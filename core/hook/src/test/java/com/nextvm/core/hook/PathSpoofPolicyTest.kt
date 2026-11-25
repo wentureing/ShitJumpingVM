@@ -175,6 +175,39 @@ class PathSpoofPolicyTest {
         assertTrue(PathPolicy.isRedirectionEnabled("com.any.other"))
     }
 
+    /** H11：模板包含「欺骗名单」段，且默认写的是 CM（不是硬编码在代码分支里）。 */
+    @Test
+    fun `H11 模板包含可配置的欺骗名单`() {
+        val text = File(dir, PathSpoofConfig.FILE_NAME).readText()
+        assertTrue("模板缺少「欺骗名单」节", text.contains("[欺骗名单]"))
+        assertEquals(listOf(VirtualConstants.CM_PACKAGE), PathSpoofConfig.spoofList())
+        assertTrue(PathSpoofConfig.isSpoofListed(VirtualConstants.CM_PACKAGE))
+    }
+
+    /** H12：欺骗名单可运行时增删，并写回文件（改完重启生效）。 */
+    @Test
+    fun `H12 欺骗名单增删往返`() {
+        val target = "com.example.target"
+        assertFalse(PathSpoofConfig.isSpoofListed(target))
+        assertTrue(PathSpoofConfig.setSpoofListed(target, true))
+        assertTrue(PathSpoofConfig.isSpoofListed(target))
+        assertTrue(
+            "改动应写回文件",
+            File(dir, PathSpoofConfig.FILE_NAME).readText().contains(target),
+        )
+        assertTrue(PathSpoofConfig.setSpoofListed(target, false))
+        assertFalse(PathSpoofConfig.isSpoofListed(target))
+    }
+
+    /** H13：两份名单彼此独立（豁免名单里的包不能自动进欺骗名单）。 */
+    @Test
+    fun `H13 豁免名单与欺骗名单互不影响`() {
+        assertTrue(PathSpoofConfig.isGuestExempt(defaultExempt))
+        assertFalse("豁免包不应在欺骗名单", PathSpoofConfig.isSpoofListed(defaultExempt))
+        assertTrue(PathSpoofConfig.isSpoofListed(whitelisted))
+        assertFalse("欺骗名单不应进豁免", PathSpoofConfig.isGuestExempt(whitelisted))
+    }
+
     /** H10：isLoaded 反映 load 是否已执行（CmdReceiver LIST 会用它做诊断）。 */
     @Test
     fun `H10 isLoaded 反映加载状态`() {
