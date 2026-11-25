@@ -11,6 +11,7 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 # Main hook library — outputs libnextvm-native.so to match System.loadLibrary("nextvm-native")
 add_library(nextvm-native SHARED
     native-hook.cpp
+    core/path_rules.cpp
 )
 
 # Link against Android log + dynamic linker

@@ -1,0 +1,30 @@
+# 路径翻译的 golden 向量 —— **Java 与 C++ 共读同一份文件**
+#
+# 格式：id <TAB> rule_set <TAB> path <TAB> expected
+#   rule_set  由两侧测试代码各自构造（同一规格的两个构造器）
+#   <sandbox> 由测试代码替换为固定沙箱根（/sandbox/i1）
+#   expected 为 - 表示"原样返回（未命中）"
+# 说明：docs/架构/架构-C++测试夹具设计.md、docs/计划/计划-黄金测试与覆盖率提升.md（T7）
+#
+# rule_set 说明：
+#   app_i1     模拟 guest 的 APP 族规则（data root + external data 含/不含尾斜杠）
+#   external   共享存储根（/sdcard/ 等 4 条 + 2 条根形态）
+#   hidden_su  隐藏集合 + 一条 /system/ 前缀规则（用来验证隐藏优先）
+#
+# id	rule_set	path	expected
+R1	app_i1	/data/user/0/mark.via	<sandbox>
+R2	app_i1	/data/user/0/mark.via/	<sandbox>/
+R3	app_i1	/data/user/0/mark.via/files/x	<sandbox>/files/x
+R4	app_i1	/data/data/mark.via	<sandbox>
+R5	app_i1	/data/user/0/mark.via.pro	-
+R6	app_i1	/data/user/0/mark.via.pro/x	-
+R7	app_i1	/storage/emulated/0/Android/data/mark.via	<sandbox>/sdcard/Android/data/mark.via
+R8	app_i1	/storage/emulated/0/Android/data/mark.via/files/a.mht	<sandbox>/sdcard/Android/data/mark.via/files/a.mht
+R9	app_i1	/sdcard/Android/data/mark.via/	<sandbox>/sdcard/Android/data/mark.via/
+R10	external	/sdcard	<sandbox>/sdcard
+R11	external	/sdcard/Download/a.pdf	<sandbox>/sdcard/Download/a.pdf
+R12	external	/storage/emulated/0	<sandbox>/sdcard
+R13	external	/mnt/sdcard	<sandbox>/sdcard
+R14	hidden_su	/system/bin/su	/dev/null
+R15	hidden_su	/system/bin/sudo	<sandbox>/system/bin/sudo
+R16	hidden_su	/system	<sandbox>/system

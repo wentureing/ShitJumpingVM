@@ -23,6 +23,9 @@
 
 #include <limits.h>
 #include <jni.h>
+
+// 纯逻辑（无 Android/JNI 依赖）：可被 host 侧 g++ 单测编译，见 docs/架构/架构-C++测试夹具设计.md
+#include "core/path_rules.h"
 #include <android/log.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -214,63 +217,33 @@ static void patch_newly_loaded_libraries();
 
 // ==================== Path Redirection Logic ====================
 
+// 纯逻辑在 core/path_rules.{h,cpp}（可 host 单测）；这里只做薄包装 + 全局状态绑定。
+// 语义必须与 Java 侧 NativeHookBridge.translatePath 一致（共用 golden 向量，见
+// core/hook/src/test/resources/golden/path_vectors.tsv）。
+
 /**
  * Check if a path is hidden.
  */
 static bool is_path_hidden(const char* path) {
-    if (path == nullptr || g_hidden_paths.empty()) return false;
-    return g_hidden_paths.count(std::string(path)) > 0;
+    if (path == nullptr) return false;
+    return nextvm::path::is_path_hidden(g_hidden_paths, std::string(path));
 }
 
 /**
  * Check if a path needs redirection and return the redirected path.
  * Returns empty string if no redirection needed.
- *
- * 规则是前缀；以 '/' 结尾的规则还"拥有自己的根形态"（去掉尾斜杠的那个字符串）。
- * 有效长度最长者胜，平局时真正的前缀优先。
- * 必须与 Java 侧 NativeHookBridge.translatePath 的语义完全一致。
  */
-static std::string trim_trailing_slashes(const std::string& s) {
-    std::string out = s;
-    while (!out.empty() && out.back() == '/') out.pop_back();
-    return out;
-}
-
 static std::string redirect_path(const char* path) {
     if (path == nullptr || path[0] == '\0') return "";
-    if (g_path_redirects.empty()) return "";
 
-    std::string path_str(path);
+    std::string redirected = nextvm::path::redirect_path(g_path_redirects, std::string(path));
+    if (!redirected.empty()) return redirected;
 
-    std::string best_from;
-    std::string best_to;
-    size_t best_len = 0;
-    bool best_is_root = false;
-    for (const auto& redirect : g_path_redirects) {
-        const std::string& from = redirect.first;
-        const bool is_prefix =
-            path_str.size() >= from.size() && path_str.compare(0, from.size(), from) == 0;
-        const bool is_root = !is_prefix && from.size() == path_str.size() + 1 &&
-                             !from.empty() && from.back() == '/' &&
-                             from.compare(0, path_str.size(), path_str) == 0;
-        if (!is_prefix && !is_root) continue;
-        const size_t len = is_root ? path_str.size() : from.size();
-        if (!(len > best_len || (len == best_len && best_is_root && !is_root))) continue;
-        best_len = len;
-        best_from = is_prefix ? from : path_str;
-        best_to = is_root ? trim_trailing_slashes(redirect.second) : redirect.second;
-        best_is_root = is_root;
-    }
-
-    if (!best_from.empty()) {
-        if (best_is_root) return best_to;
-        return best_to + path_str.substr(best_from.size());
-    }
-
-    // Special case: /data/user/0/ is the same as /data/data/
-    if (path_str.compare(0, 13, "/data/user/0/") == 0) {
-        std::string alt_path = "/data/data/" + path_str.substr(13);
-        return redirect_path(alt_path.c_str());
+    // 等价族兜底：/data/user/0/ 与 /data/data/ 指向同一目录。
+    // 生产规则两侧都注册（setupAppRedirections），这里只防"只注册一条"的将来情况。
+    if (std::strncmp(path, "/data/user/0/", 13) == 0) {
+        std::string alt_path = std::string("/data/data/") + (path + 13);
+        return nextvm::path::redirect_path(g_path_redirects, alt_path);
     }
 
     return "";
