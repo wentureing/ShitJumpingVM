@@ -102,7 +102,12 @@ internal class ContainerSelfCheck(
         }
     }
 
-    private inline fun guard(id: String, name: String, body: () -> Check, cleanup: () -> Unit) =
+    private inline fun guard(
+        id: String,
+        name: String,
+        body: () -> Check,
+        cleanup: () -> Unit = {},
+    ) =
         try {
             body()
         } catch (t: Throwable) {
