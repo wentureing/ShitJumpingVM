@@ -66,6 +66,16 @@ android {
         versionName = "1.0.0-" + (System.getenv("GITHUB_SHA")?.take(7) ?: "local")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 真机只有 arm64-v8a：把 native 编译从 4 个 ABI 降到 1 个
+        // （CMake 编译时间约 1/4，打包体积也更小）。
+        // 本地需要别的 ABI 时：ABI_FILTERS=arm64-v8a,armeabi-v7a,x86_64
+        ndk {
+            abiFilters += (System.getenv("ABI_FILTERS") ?: "arm64-v8a")
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+        }
     }
 
     // 显式声明签名配置：绝不依赖 AGP 对 ~/.android/debug.keystore 的隐式推断
