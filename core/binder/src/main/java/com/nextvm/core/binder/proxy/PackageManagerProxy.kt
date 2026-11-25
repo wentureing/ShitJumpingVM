@@ -753,7 +753,14 @@ class PackageManagerProxy(
                 dataDir = VirtualConstants.syntheticDataDir(app.packageName)
                 // 加密存储目录同样会暴露沙箱，跟 dataDir 一起合成（真机两者常常相同）
                 deviceProtectedDataDir = dataDir
-                credentialProtectedDataDir = dataDir
+                // credentialProtectedDataDir 在 android-35 SDK 里不是 public（编译报
+                // Unresolved reference），只能反射设置；设不上就跳过 —— 该字段用得很少。
+                runCatching {
+                    ApplicationInfo::class.java
+                        .getDeclaredField("credentialProtectedDataDir")
+                        .apply { isAccessible = true }
+                        .set(this, dataDir)
+                }
                 nativeLibraryDir = VirtualConstants.syntheticLibDir(app.packageName)
                 val synthApk = VirtualConstants.syntheticApkPath(app.packageName)
                 sourceDir = synthApk
