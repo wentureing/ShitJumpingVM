@@ -1110,12 +1110,22 @@ typedef long (*orig_ptrace_t)(int, ...);
 typedef long (*orig_syscall_t)(long, ...);
 typedef pid_t (*orig_fork_t)();
 typedef DIR* (*orig_opendir_t)(const char*);
+typedef int (*orig_mkdir_t)(const char*, mode_t);
+typedef int (*orig_mkdirat_t)(int, const char*, mode_t);
+typedef int (*orig_unlink_t)(const char*);
+typedef int (*orig_unlinkat_t)(int, const char*, int);
+typedef int (*orig_rename_t)(const char*, const char*);
 
 static orig_dl_iterate_phdr_t real_dl_iterate_phdr = nullptr;
 static orig_ptrace_t real_ptrace = nullptr;
 static orig_syscall_t real_syscall = nullptr;
 static orig_fork_t real_fork = nullptr;
 static orig_opendir_t real_opendir = nullptr;
+static orig_mkdir_t real_mkdir = nullptr;
+static orig_mkdirat_t real_mkdirat = nullptr;
+static orig_unlink_t real_unlink = nullptr;
+static orig_unlinkat_t real_unlinkat = nullptr;
+static orig_rename_t real_rename = nullptr;
 
 typedef void* (*orig_mmap_t)(void*, size_t, int, int, int, off_t);
 static orig_mmap_t real_mmap = nullptr;
@@ -1296,8 +1306,73 @@ static DIR* hooked_opendir(const char* path) {
             LOGI("DIAG opendir %s by %s", path, who);
         }
     }
-    if (real_opendir) return real_opendir(path);
-    return nullptr;
+    if (real_opendir == nullptr) return nullptr;
+    // 目录列举也必须走重定向：否则应用列的是宿主目录，而文件写在沙箱
+    std::string redirected = redirect_path(path);
+    if (!redirected.empty()) {
+        LOGD("opendir: %s -> %s", path, redirected.c_str());
+        return real_opendir(redirected.c_str());
+    }
+    return real_opendir(path);
+}
+
+/* mkdir/mkdirat: 只建最后一级（AOSP 语义），父目录缺失时返回 -1/ENOENT。 */
+static int hooked_mkdir(const char* path, mode_t mode) {
+    if (real_mkdir == nullptr) { errno = ENOSYS; return -1; }
+    std::string redirected = redirect_path(path);
+    if (!redirected.empty()) {
+        LOGD("mkdir: %s -> %s", path, redirected.c_str());
+        return real_mkdir(redirected.c_str(), mode);
+    }
+    return real_mkdir(path, mode);
+}
+
+static int hooked_mkdirat(int dirfd, const char* path, mode_t mode) {
+    if (real_mkdirat == nullptr) { errno = ENOSYS; return -1; }
+    if (path != nullptr && path[0] == '/') {
+        std::string redirected = redirect_path(path);
+        if (!redirected.empty()) {
+            LOGD("mkdirat(abs): %s -> %s", path, redirected.c_str());
+            return real_mkdirat(dirfd, redirected.c_str(), mode);
+        }
+    }
+    return real_mkdirat(dirfd, path, mode);
+}
+
+/* unlink/unlinkat: 安全红线 —— 不重定向会删到宿主真实文件。 */
+static int hooked_unlink(const char* path) {
+    if (real_unlink == nullptr) { errno = ENOSYS; return -1; }
+    std::string redirected = redirect_path(path);
+    if (!redirected.empty()) {
+        LOGD("unlink: %s -> %s", path, redirected.c_str());
+        return real_unlink(redirected.c_str());
+    }
+    return real_unlink(path);
+}
+
+static int hooked_unlinkat(int dirfd, const char* path, int flags) {
+    if (real_unlinkat == nullptr) { errno = ENOSYS; return -1; }
+    if (path != nullptr && path[0] == '/') {
+        std::string redirected = redirect_path(path);
+        if (!redirected.empty()) {
+            LOGD("unlinkat(abs): %s -> %s", path, redirected.c_str());
+            return real_unlinkat(dirfd, redirected.c_str(), flags);
+        }
+    }
+    return real_unlinkat(dirfd, path, flags);
+}
+
+/* rename: 源/目标各自翻译（保存网页的「临时 -> 正式」这一步）。 */
+static int hooked_rename(const char* oldpath, const char* newpath) {
+    if (real_rename == nullptr) { errno = ENOSYS; return -1; }
+    std::string srcR = redirect_path(oldpath);
+    std::string dstR = redirect_path(newpath);
+    const char* src = srcR.empty() ? oldpath : srcR.c_str();
+    const char* dst = dstR.empty() ? newpath : dstR.c_str();
+    if (!srcR.empty() || !dstR.empty()) {
+        LOGD("rename: %s -> %s (%s -> %s)", oldpath, newpath, src, dst);
+    }
+    return real_rename(src, dst);
 }
 
 /**
@@ -1540,6 +1615,11 @@ static HookEntry g_hook_entries[] = {
     {"syscall",                 (void*)hooked_syscall,              (void**)&real_syscall},
     {"fork",                    (void*)hooked_fork,                 (void**)&real_fork},
     {"opendir",                 (void*)hooked_opendir,              (void**)&real_opendir},
+    {"mkdir",                   (void*)hooked_mkdir,                (void**)&real_mkdir},
+    {"mkdirat",                 (void*)hooked_mkdirat,              (void**)&real_mkdirat},
+    {"unlink",                  (void*)hooked_unlink,               (void**)&real_unlink},
+    {"unlinkat",                (void*)hooked_unlinkat,             (void**)&real_unlinkat},
+    {"rename",                  (void*)hooked_rename,               (void**)&real_rename},
     {"mmap",                    (void*)hooked_mmap,                 (void**)&real_mmap},
     {"mprotect",                (void*)hooked_mprotect,             (void**)&real_mprotect},
     {"connect",                 (void*)hooked_connect,              (void**)&real_connect},
@@ -2050,6 +2130,11 @@ static bool install_plt_hooks() {
         real_fork = (orig_fork_t)dlsym(RTLD_DEFAULT, "fork");
     if (!real_opendir)
         real_opendir = (orig_opendir_t)dlsym(RTLD_DEFAULT, "opendir");
+    real_mkdir = (orig_mkdir_t)dlsym(RTLD_DEFAULT, "mkdir");
+    real_mkdirat = (orig_mkdirat_t)dlsym(RTLD_DEFAULT, "mkdirat");
+    real_unlink = (orig_unlink_t)dlsym(RTLD_DEFAULT, "unlink");
+    real_unlinkat = (orig_unlinkat_t)dlsym(RTLD_DEFAULT, "unlinkat");
+    real_rename = (orig_rename_t)dlsym(RTLD_DEFAULT, "rename");
     if (!real_mmap)
         real_mmap = (orig_mmap_t)dlsym(RTLD_DEFAULT, "mmap");
     if (!real_mprotect)
