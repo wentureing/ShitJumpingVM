@@ -160,11 +160,8 @@ class VirtualEngine @Inject constructor(
      * 由 CmdReceiver 的 SELF_CHECK 触发，返回一行 hookcheck 汇总。
      */
     fun selfCheck(): String {
-        val root = if (::virtualRoot.isInitialized) {
-            virtualRoot
-        } else {
-            java.io.File(context.filesDir, VirtualConstants.VIRTUAL_DIR)
-        }
+        // 写入目标用 app 私有 cacheDir：自检不该在 virtualRoot（用户/Files 页面可见）留任何痕迹。
+        val writeRoot = java.io.File(context.cacheDir, "selfcheck")
         val conf = java.io.File(context.filesDir, "path_spoof.conf")
         val diag = if (DebugFlags.isDebugBuild()) {
             java.io.File(context.filesDir, DiagFiles.DEBUG_TRACE)
@@ -182,7 +179,7 @@ class VirtualEngine @Inject constructor(
         }
         val checker = ContainerSelfCheck(
             paths = probe,
-            sandboxRoot = root,
+            writeRoot = writeRoot,
             confText = if (conf.exists()) runCatching { conf.readText() }.getOrNull() else null,
             diagFile = diag,
         )

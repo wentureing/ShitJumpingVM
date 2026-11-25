@@ -49,18 +49,13 @@ class ContainerSelfCheckTest {
     }
 
     @Test
-    fun `C2 写入落在沙箱并清理`() {
-        val sandbox = tmp.newFolder("virtual")
-        val c = ContainerSelfCheck(FakeProbe(), sandbox, "[豁免名单]\n", null).run()
+    fun `C2 规则翻译后可写且不留痕迹`() {
+        // writeRoot 模拟 context.cacheDir（app 私有），不再写 virtualRoot。
+        val writeRoot = File(tmp.root, "cache/selfcheck")
+        val c = ContainerSelfCheck(FakeProbe(), writeRoot, "[豁免名单]\n", null).run()
         assertTrue(check("S3", c).detail, check("S3", c).ok)
-        assertFalse(
-            "临时写入文件应被清理",
-            File(sandbox, "selfcheck/w/f.txt").exists()
-        )
-        assertFalse(
-            "临时目录也必须删干净（不能留在用户可见目录里）",
-            File(sandbox, "selfcheck").exists()
-        )
+        assertFalse("临时写入文件应被清理", File(writeRoot, "w/f.txt").exists())
+        assertFalse("临时目录也必须删干净", writeRoot.exists())
     }
 
     @Test

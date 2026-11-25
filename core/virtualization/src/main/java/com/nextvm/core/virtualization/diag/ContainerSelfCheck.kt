@@ -17,7 +17,13 @@ internal interface PathProbe {
 
 internal class ContainerSelfCheck(
     private val paths: PathProbe,
-    private val sandboxRoot: File,
+    /**
+     * 自检写入的目标根（**app 私有**，通常 `context.cacheDir`）。
+     *
+     * 不能用 `virtualRoot`：那里是用户/容器 Files 页面可见的目录，自检不该在其中留任何痕迹。
+     * 目标目录选哪里不影响验证力 —— 只要路径经过 translate()，验证的就是"规则翻译 + 真的能写"。
+     */
+    private val writeRoot: File,
     private val confText: String?,
     /** 诊断通道文件（null 表示不测，例如 release 构建）。 */
     private val diagFile: File?,
@@ -59,22 +65,21 @@ internal class ContainerSelfCheck(
         Check("S2", "规则移除后不命中", got == PREFIX_IN + "y", "translate=$got")
     })
 
-    private fun isolatedWrite(): Check = guard("S3", "写入落在沙箱", {
-        val sandboxPrefix = sandboxRoot.absolutePath.trimEnd('/') + "/selfcheck/w/"
-        paths.add(PREFIX_W, sandboxPrefix)
+    private fun isolatedWrite(): Check = guard("S3", "规则翻译后可写", {
+        val targetRoot = writeRoot.absolutePath.trimEnd('/')
+        paths.add(PREFIX_W, "$targetRoot/w/")
         val target = paths.translate(PREFIX_W + "f.txt")
         val f = File(target)
         f.parentFile?.mkdirs()
         f.writeText("selfcheck")
-        val inSandbox = f.absolutePath.startsWith(sandboxRoot.absolutePath)
-        Check("S3", "写入落在沙箱", inSandbox && f.exists(), "target=$target inSandbox=$inSandbox")
+        val inWriteRoot = f.absolutePath.startsWith(targetRoot)
+        Check("S3", "规则翻译后可写", inWriteRoot && f.exists(), "target=$target inWriteRoot=$inWriteRoot")
     }) {
         paths.remove(PREFIX_W)
-        // 自检不能在任何"用户可见目录"里留下痕迹：文件与两级目录都要删干净。
-        val base = File(sandboxRoot, "selfcheck")
-        runCatching { File(base, "w/f.txt").delete() }
-        runCatching { File(base, "w").delete() }
-        runCatching { base.delete() }
+        // 自检不留在任何可见目录里；writeRoot 本身是 app 私有（cacheDir），失败也无害。
+        runCatching { File(writeRoot, "w/f.txt").delete() }
+        runCatching { File(writeRoot, "w").delete() }
+        runCatching { writeRoot.delete() }
     }
 
     private fun unknownPathUntouched(): Check = guard("S4", "未知路径不误改", {
