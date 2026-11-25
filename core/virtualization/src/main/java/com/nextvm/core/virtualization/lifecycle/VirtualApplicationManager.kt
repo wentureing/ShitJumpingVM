@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.nextvm.core.virtualization.lifecycle.diag.GuestMemoryDump
+import com.nextvm.core.virtualization.lifecycle.diag.InitTrace
 import com.nextvm.core.virtualization.lifecycle.diag.MapsSnapshot
 import com.nextvm.core.virtualization.lifecycle.diag.PluginProbes
 import com.nextvm.core.virtualization.lifecycle.diag.RealSnap
@@ -69,323 +70,6 @@ private fun dumpV148ConnectProbe() {
     }
 }
 
-/**
- * v155: init-time trace, started once per process at bind entry.
- * v153 tried Debug.startMethodTracingSampling(path, 64MB, 1000us)
- * with a 90s window — and FROZE the guest in all three test
- * sessions (2026-11-06: main thread stuck 7-9s in File.exists /
- * Gson.toJson / ConstraintLayout, 5 system ANRs, 0-byte trace
- * files; the 1ms sampler suspends every thread 1000x/sec to walk
- * stacks). Reverted to v151's proven config: full tracing,
- * Debug.startMethodTracing(path, 64MB), 20s window. The 64MB
- * buffer fills during the init burst (as in v151/v152), so the
- * effective window is the init burst — the 90s ambition is
- * dropped; a 256MB buffer stays a deferred fallback. After stop,
- * a background filter pass extracts only device-identity method
- * entries (risk SDK, Telephony, Settings, Wifi/Location,
- * DeviceInfoUtils/key-info, package info, plus the bridge
- * failure chain) into v155-init-filtered.log; the same pass runs
- * on the v134 click trace (v155-click-filtered.log). Trace
- * format (ART SLOW v3, same as the v134 files): text header with
- * a *methods section of "hexId<TAB>class<TAB>method" lines up to
- * "*end", then "SLOW" + 14-byte records <u16 tid, u32 mid,
- * u32 t1, u32 t2>; low bit of mid is the exit flag, base id is
- * mid & ~3. Names are class + "." + method. Full traces keep
- * ENTER records only.
- */
-@Volatile
-private var v155InitTraceStarted = false
-
-@Volatile
-private var v155InitTraceStoppedByClick = false
-
-// v156: login-page load trace (LoginActivity first resume,
-// once per process). The init trace only covers the
-// Application burst — 9626's init table has 1,693 methods
-// and no LoginActivity at all — so the load window was
-// never method-traced. 256MB buffer (the deferred fallback
-// from v151/v154), 20s window, same filter pass.
-@Volatile
-private var v156LoadTraceStarted = false
-
-@Volatile
-private var v156LoadTraceStoppedByClick = false
-
-@Volatile
-private var v156LoadTraceFiltered = false
-
-/**
- * v155: stop-before-start for the click traces (kept from v153,
- * which never fired in the frozen sessions — exonerated). If a
- * trace is active (the init trace's 20s timer has not fired
- * yet), stop it first — a second startMethodTracing while
- * tracing is active is a silent no-op on this device (v152's
- * click trace came back 0 bytes), so the click trace must clear
- * the way. On a successful stop, set the flag (the init 20s
- * stop then skips itself) and run the init filter on the
- * finalized init trace file. On failure (nothing was tracing)
- * just log it — that tells us whether a trace was active at
- * click time.
- */
-private fun v155StopBeforeStart(dir: java.io.File, tag: String) {
-    try {
-        android.os.Debug.stopMethodTracing()
-        GuestBreadcrumb.log("$tag stop-before-start")
-        v155InitTraceStoppedByClick = true
-        // v156: if the load trace was the active one, the
-        // click stopped it too — its delayed stop must skip
-        // itself and its filter must run here, or the load
-        // trace file is never filtered.
-        if (v156LoadTraceStarted) {
-            v156LoadTraceStoppedByClick = true
-        }
-        val initFile = java.io.File(
-            dir, "v155-trace-" + android.os.Process.myPid() + "-1.trace"
-        )
-        Thread({
-            filterV154Trace(initFile, dir)
-        }, "v155-trace-filter").start()
-        if (v156LoadTraceStarted && !v156LoadTraceFiltered) {
-            v156LoadTraceFiltered = true
-            val loadFile = java.io.File(
-                dir,
-                "v156-load-trace-" + android.os.Process.myPid() +
-                    "-1.trace"
-            )
-            Thread({
-                filterV154Trace(
-                    loadFile, dir,
-                    "v156-load-filtered.log", "v156-load"
-                )
-            }, "v156-load-filter").start()
-        }
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "$tag stop-before-start none " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
-
-private fun startV154InitTrace() {
-    if (v155InitTraceStarted) return
-    try {
-        val dir = GuestBreadcrumb.filesDir() ?: return
-        v155InitTraceStarted = true
-        val traceFile = java.io.File(
-            dir, "v155-trace-" + android.os.Process.myPid() + "-1.trace"
-        )
-        android.os.Debug.startMethodTracing(
-            traceFile.absolutePath, 64 * 1024 * 1024
-        )
-        GuestBreadcrumb.log("v155-trace start file=" + traceFile.name)
-        android.os.Handler(
-            android.os.Looper.getMainLooper()
-        ).postDelayed({
-            if (v155InitTraceStoppedByClick) {
-                GuestBreadcrumb.log(
-                    "v155-trace stop skipped already stopped by click"
-                )
-            } else {
-                try {
-                    android.os.Debug.stopMethodTracing()
-                    GuestBreadcrumb.log(
-                        "v155-trace stop delayed file=" + traceFile.name
-                    )
-                } catch (e: Throwable) {
-                    GuestBreadcrumb.log(
-                        "v155-trace stop failed " +
-                            "${e.javaClass.simpleName}: " + e.message
-                    )
-                }
-                Thread({
-                    filterV154Trace(traceFile, dir)
-                }, "v155-trace-filter").start()
-            }
-        }, 20000L)
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "v155-trace start failed " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
-
-private fun startV156LoadTrace() {
-    if (v156LoadTraceStarted) return
-    try {
-        val dir = GuestBreadcrumb.filesDir() ?: return
-        // Stop the init trace first (its 20s timer has not
-        // fired yet at first LoginActivity resume); a second
-        // start while tracing is a silent no-op (v152). The
-        // started flag is set AFTER this call so the
-        // stop-before-start does not mark the load trace
-        // itself as stopped-by-click before it starts.
-        v155StopBeforeStart(dir, "v156-load")
-        v156LoadTraceStarted = true
-        val traceFile = java.io.File(
-            dir,
-            "v156-load-trace-" + android.os.Process.myPid() + "-1.trace"
-        )
-        android.os.Debug.startMethodTracing(
-            traceFile.absolutePath, 256 * 1024 * 1024
-        )
-        GuestBreadcrumb.log("v156-load-trace start file=" + traceFile.name)
-        android.os.Handler(
-            android.os.Looper.getMainLooper()
-        ).postDelayed({
-            if (v156LoadTraceStoppedByClick) {
-                GuestBreadcrumb.log(
-                    "v156-load-trace stop skipped already stopped by click"
-                )
-            } else {
-                try {
-                    android.os.Debug.stopMethodTracing()
-                    GuestBreadcrumb.log(
-                        "v156-load-trace stop delayed file=" + traceFile.name
-                    )
-                } catch (e: Throwable) {
-                    GuestBreadcrumb.log(
-                        "v156-load-trace stop failed " +
-                            "${e.javaClass.simpleName}: " + e.message
-                    )
-                }
-                if (!v156LoadTraceFiltered) {
-                    v156LoadTraceFiltered = true
-                    Thread({
-                        filterV154Trace(
-                            traceFile, dir,
-                            "v156-load-filtered.log", "v156-load"
-                        )
-                    }, "v156-load-filter").start()
-                }
-            }
-        }, 20000L)
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "v156-load-trace start failed " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
-
-private fun filterV154Trace(
-    traceFile: java.io.File, dir: java.io.File,
-    outName: String = "v155-init-filtered.log",
-    tag: String = "v155",
-    sampled: Boolean = false
-) {
-    try {
-        val data = traceFile.readBytes()
-        // Find "*end\n" terminating the text header.
-        var textEnd = -1
-        var i = 0
-        while (i + 4 < data.size) {
-            if (data[i] == '*'.code.toByte() &&
-                data[i + 1] == 'e'.code.toByte() &&
-                data[i + 2] == 'n'.code.toByte() &&
-                data[i + 3] == 'd'.code.toByte() &&
-                data[i + 4] == '\n'.code.toByte()
-            ) {
-                textEnd = i
-                break
-            }
-            i++
-        }
-        if (textEnd < 0) {
-            GuestBreadcrumb.log("$tag-filter failed no *end")
-            return
-        }
-        val methods = HashMap<Int, String>()
-        var inMethods = false
-        val text = String(data, 0, textEnd, Charsets.UTF_8)
-        for (line in text.split("\n")) {
-            if (line == "*methods") {
-                inMethods = true
-                continue
-            }
-            if (line.startsWith("*")) {
-                inMethods = false
-                continue
-            }
-            if (inMethods) {
-                val parts = line.split("\t")
-                if (parts.size >= 3) {
-                    val id = try {
-                        parts[0].removePrefix("0x").toLong(16).toInt()
-                    } catch (_: Throwable) {
-                        continue
-                    }
-                    methods[id] = parts[1] + "." + parts[2]
-                }
-            }
-        }
-        val blobOff = textEnd + 5
-        if (blobOff + 32 > data.size ||
-            data[blobOff] != 'S'.code.toByte() ||
-            data[blobOff + 1] != 'L'.code.toByte() ||
-            data[blobOff + 2] != 'O'.code.toByte() ||
-            data[blobOff + 3] != 'W'.code.toByte()
-        ) {
-            GuestBreadcrumb.log("$tag-filter failed no SLOW")
-            return
-        }
-        fun u32(off: Int): Int {
-            return (data[off].toInt() and 0xFF) or
-                ((data[off + 1].toInt() and 0xFF) shl 8) or
-                ((data[off + 2].toInt() and 0xFF) shl 16) or
-                ((data[off + 3].toInt() and 0xFF) shl 24)
-        }
-        val recSize = u32(blobOff + 16)
-        if (recSize < 14) {
-            GuestBreadcrumb.log("$tag-filter failed recSize=$recSize")
-            return
-        }
-        val keys = arrayOf(
-            "zw/mobile/risk", "TelephonyManager",
-            "Settings\$Secure", "WifiManager", "LocationManager",
-            "DeviceInfoUtils", "RequestForBridge",
-            "getPackageInfo", "getPackageManager", "android.os.Build",
-            "ResponseProcess", "ErrorForBridge", "callBackError",
-            "onHttpFailure", "onHttpSuccess"
-        )
-        val out = java.io.File(dir, outName)
-        var total = 0
-        var matched = 0
-        out.bufferedWriter().use { w ->
-            var off = blobOff + 32
-            while (off + recSize <= data.size) {
-                total++
-                val tid = (data[off].toInt() and 0xFF) or
-                    ((data[off + 1].toInt() and 0xFF) shl 8)
-                val mid = u32(off + 2)
-                val t2 = u32(off + 10)
-                off += recSize
-                if (!sampled && mid and 1 != 0) continue
-                val name = methods[mid and -4] ?: continue
-                var hit = false
-                for (k in keys) {
-                    if (name.contains(k)) {
-                        hit = true
-                        break
-                    }
-                }
-                if (!hit) continue
-                matched++
-                w.write("t2=$t2 tid=$tid $name\n")
-            }
-        }
-        GuestBreadcrumb.log(
-            "$tag-filter done matched=$matched total=$total " +
-                "file=" + out.name + " traceBytes=" + data.size
-        )
-    } catch (e: Throwable) {
-        GuestBreadcrumb.log(
-            "$tag-filter failed " +
-                "${e.javaClass.simpleName}: " + e.message
-        )
-    }
-}
 
 class VirtualApplicationManager @Inject constructor(
     private val resourceManager: VirtualResourceManager,
@@ -513,7 +197,7 @@ class VirtualApplicationManager @Inject constructor(
         // pulled. The full trace stays on-device as backup. A
         // failed start/stop/filter never touches the bind.
         if (packageName == "com.greenpoint.android.mc10086.activity") {
-            startV154InitTrace()
+            InitTrace.startInit()
         }
 
         var legacyPrevInstr: Instrumentation? = null
@@ -837,7 +521,7 @@ class VirtualApplicationManager @Inject constructor(
                         if (a.javaClass.name ==
                             "com.cmccit.loginmodule.ac.LoginActivity"
                         ) {
-                            startV156LoadTrace()
+                            InitTrace.startLoad()
                         }
                         // v124: every resume re-checks the login button
                         // (fragment tab switches do not resume a new
@@ -2406,7 +2090,7 @@ class VirtualApplicationManager @Inject constructor(
                         // v155: same stop-before-start as the face
                         // click trace — a login tap inside the init
                         // window otherwise starts nothing.
-                        v155StopBeforeStart(dir, "v155-login")
+                        InitTrace.stopBeforeStart(dir, "v155-login")
                         android.os.Debug.startMethodTracing(
                             traceFile.absolutePath, 32 * 1024 * 1024
                         )
@@ -2496,7 +2180,7 @@ class VirtualApplicationManager @Inject constructor(
                         // fired); a second start while tracing is
                         // a silent no-op (v152's click trace came
                         // back 0 bytes).
-                        v155StopBeforeStart(dir, "v155-click")
+                        InitTrace.stopBeforeStart(dir, "v155-click")
                         android.os.Debug.startMethodTracing(
                             traceFile.absolutePath, 64 * 1024 * 1024
                         )
@@ -2524,7 +2208,7 @@ class VirtualApplicationManager @Inject constructor(
                             // thread/time is captured in
                             // v155-click-filtered.log.
                             Thread({
-                                filterV154Trace(
+                                InitTrace.filter(
                                     traceFile, dir,
                                     "v155-click-filtered.log", "v155-click"
                                 )
