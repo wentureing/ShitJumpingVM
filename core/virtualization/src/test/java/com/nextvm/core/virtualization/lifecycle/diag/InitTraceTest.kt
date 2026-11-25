@@ -33,9 +33,10 @@ class InitTraceTest {
         val blob = java.io.ByteArrayOutputStream()
         blob.write(header.toString().toByteArray(Charsets.UTF_8))
         blob.write("SLOW".toByteArray(Charsets.UTF_8))
-        // 块头 32 字节，紧跟在 "SLOW" 之后；生产代码读 recSize 的位置是 blobOff + 16，
-        // 即块头偏移 12（不是 16）——写错会让 recSize=0，collectRecords 变成死循环。
-        val head = ByteArray(32)
+        // "SLOW" 之后是 28 字节块头，记录从 blobOff + 32 起（4 魔数 + 28 块头）。
+        // recSize 位于块头偏移 12（生产读 blobOff + 16 = 4 + 12）。
+        // 写错块头长度或偏移会让记录起点错位、recSize 读成 0（后者曾导致死循环）。
+        val head = ByteArray(28)
         head[12] = (recSize and 0xFF).toByte()
         head[13] = ((recSize shr 8) and 0xFF).toByte()
         head[14] = ((recSize shr 16) and 0xFF).toByte()
