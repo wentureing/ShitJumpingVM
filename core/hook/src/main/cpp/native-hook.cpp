@@ -7166,8 +7166,9 @@ static jboolean hooked_ufs_createDirectory0(JNIEnv* env, jclass, jobject file) {
 
     int r;
     do {
-        r = (real_mkdir != nullptr) ? real_mkdir(real.c_str(), 0770)
-                                    : ::mkdir(real.c_str(), 0770);
+        // AOSP: UnixFileSystem_md.c 用 mkdir(path, 0777)；umask 会再裁剪
+        r = (real_mkdir != nullptr) ? real_mkdir(real.c_str(), 0777)
+                                    : ::mkdir(real.c_str(), 0777);
     } while (r == -1 && errno == EINTR);
 
     if (r == -1) {
@@ -7215,7 +7216,7 @@ static jboolean hooked_ufs_createFileExclusively0(JNIEnv* env, jclass, jstring j
  *   BA_EXISTS    = 0x01
  *   BA_REGULAR   = 0x02
  *   BA_DIRECTORY = 0x04
- *   BA_HIDDEN    = 0x08
+ *   （注意：AOSP 的这个方法不返回 BA_HIDDEN）
  * 失败返回 0（不抛异常）。
  */
 static jint hooked_ufs_getBooleanAttributes0(JNIEnv* env, jclass, jstring jpath) {
@@ -7247,8 +7248,9 @@ static jint hooked_ufs_getBooleanAttributes0(JNIEnv* env, jclass, jstring jpath)
     int attrs = 0x01;                                   // BA_EXISTS
     if (S_ISREG(st.st_mode)) attrs |= 0x02;              // BA_REGULAR
     if (S_ISDIR(st.st_mode)) attrs |= 0x04;              // BA_DIRECTORY
-    const char* base = strrchr(real.c_str(), '/');
-    if (base != nullptr && base[1] == '.') attrs |= 0x08; // BA_HIDDEN（简化：点开头）
+    // AOSP 的 getBooleanAttributes0 只返回 EXISTS | REGULAR | DIRECTORY，
+    // 不返回 BA_HIDDEN —— File.isHidden() 在 Java 层用 getName().startsWith(".") 判断。
+    // 这里曾错误地加了 0x08，会让 File.isHidden() 看到错误结果。
     if (translated) java_io_record("getBooleanAttributes0", real.c_str(), 0, attrs);
     return static_cast<jint>(attrs);
 }
