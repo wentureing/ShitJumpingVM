@@ -29,9 +29,10 @@ class GuestMemoryDumpTest {
 
     @Test
     fun `G3 尊重偏移且不读相邻字节`() {
-        val b = byteArrayOf(0x00, 0x00, 0x78, 0x56, 0x34, 0x12, 0x7F)
-        assertEquals(0x12345678, GuestMemoryDump.le32(b, 2))
-        assertEquals(0x00000000, GuestMemoryDump.le32(b, 0))
+        // 前 4 字节全 0，从偏移 4 读取才是 0x12345678
+        val b = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12)
+        assertEquals(0x12345678, GuestMemoryDump.le32(b, 4))
+        assertEquals("偏移 0 只能读到前四个字节", 0, GuestMemoryDump.le32(b, 0))
     }
 
     @Test
