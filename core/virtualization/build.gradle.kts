@@ -16,6 +16,13 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+
+    testOptions {
+        unitTests {
+            // 失败时打印完整异常栈（默认会吞）
+            all { it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL } }
+        }
+    }
 }
 
 dependencies {
@@ -45,4 +52,12 @@ dependencies {
     // 纯 JVM 单测（不引 Robolectric）：先铆住启动链里的两个纯状态机
     // StubRegistry / VirtualProcessManager，见 docs/计划/计划-黄金测试与覆盖率提升.md
     testImplementation(libs.junit)
+}
+
+// 打印每个测试的耗时（CI 定位"哪个类慢"用；本地同样输出，无副作用）。
+tasks.withType<Test>().configureEach {
+    afterTest { desc, result ->
+        val ms = result.endTime - result.startTime
+        println("TESTTIME ${desc.className}#${desc.displayName} ${ms}ms ${result.resultType}")
+    }
 }
