@@ -455,14 +455,16 @@ class NativeHookBridge @Inject constructor() {
      * checks.log 走诊断层落文件，能可靠导出。
      */
     fun dumpFsStats(stage: String) {
+        // 无条件先落一条：用来区分"没调用到"与"调用了但 JNI 失败"
+        com.nextvm.core.common.diagnostics.DiagnosticsHolder.stage(
+            "fs.stats", "$stage enter native=$nativeHooksAvailable"
+        )
         if (!nativeHooksAvailable) return
         runCatching {
             val stats = nativeGetFsStats()
-            if (!stats.isNullOrEmpty()) {
-                com.nextvm.core.common.diagnostics.DiagnosticsHolder.stage(
-                    "fs.stats", "$stage $stats"
-                )
-            }
+            com.nextvm.core.common.diagnostics.DiagnosticsHolder.stage(
+                "fs.stats", "$stage raw=${stats ?: "<null>"}"
+            )
             val recent = nativeGetFsRecent()
             if (!recent.isNullOrEmpty()) {
                 recent.lineSequence().filter { it.isNotBlank() }.take(12).forEach {
@@ -471,6 +473,10 @@ class NativeHookBridge @Inject constructor() {
                     )
                 }
             }
+        }.onFailure {
+            com.nextvm.core.common.diagnostics.DiagnosticsHolder.error(
+                "fs.stats", "$stage JNI failed: ${it.javaClass.simpleName}: ${it.message}", it
+            )
         }
     }
     /**
