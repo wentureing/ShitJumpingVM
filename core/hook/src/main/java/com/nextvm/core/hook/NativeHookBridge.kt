@@ -474,13 +474,12 @@ class NativeHookBridge @Inject constructor() {
         //   于是拼出 .../Android/data/com.nextvm.app/... —— 必须落到 guest 自己的 external 目录，
         //   否则"保存到 A、从 B 读"，列表永远是空的。
         if (HOST_EXTERNAL_FALLBACK) {
-            val guestExternalDir = "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
-            addPathRedirection(HOST_EXT_PREFIX_A, guestExternalDir)
-            addPathRedirection(HOST_EXT_PREFIX_B, guestExternalDir)
-            runCatching { java.io.File(guestExternalDir).mkdirs() }
+            addPathRedirection(HOST_EXT_PREFIX_A, guestExternalData)
+            addPathRedirection(HOST_EXT_PREFIX_B, guestExternalData)
+            runCatching { java.io.File(guestExternalData).mkdirs() }
             Timber.tag(TAG).i(
                 "Host-package external fallback ON: %s|%s -> %s",
-                HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B, guestExternalDir
+                HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B, guestExternalData
             )
         }
 
