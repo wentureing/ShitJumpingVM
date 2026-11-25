@@ -7315,6 +7315,100 @@ static jint hooked_ufs_getBooleanAttributes0(JNIEnv* env, jclass, jstring jpath)
     if (translated) java_io_record("getBooleanAttributes0", real.c_str(), 0, attrs);
     return static_cast<jint>(attrs);
 }
+/*
+ * File.lastModified() —— AOSP: stat64 成功时返回 st_mtim.tv_sec*1000 + tv_nsec/1000000（毫秒）
+ * 失败返回 0。
+ */
+static jlong hooked_ufs_getLastModifiedTime0(JNIEnv* env, jclass, jobject file) {
+    jstring jpath = ufs_get_path(env, file);
+    if (jpath == nullptr) return 0;
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    env->DeleteLocalRef(jpath);
+    if (real.empty()) return 0;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    struct stat st;
+    int r;
+    do {
+        r = (real_stat != nullptr) ? real_stat(real.c_str(), &st) : ::stat(real.c_str(), &st);
+    } while (r == -1 && errno == EINTR);
+
+    if (r == -1) {
+        return 0;   // AOSP: 失败返回 0，不抛
+    }
+    jlong ms = static_cast<jlong>(st.st_mtim.tv_sec) * 1000
+             + static_cast<jlong>(st.st_mtim.tv_nsec) / 1000000;
+    if (translated) java_io_record("getLastModifiedTime0", real.c_str(), 0, 0);
+    return ms;
+}
+
+/*
+ * File.setLastModified(time) —— AOSP: 先 stat 取 atime，再用 utimes 设 mtime（毫秒转微秒）。
+ * 失败返回 false。
+ */
+static jboolean hooked_ufs_setLastModifiedTime0(JNIEnv* env, jclass, jobject file, jlong time) {
+    jstring jpath = ufs_get_path(env, file);
+    if (jpath == nullptr) return JNI_FALSE;
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    env->DeleteLocalRef(jpath);
+    if (real.empty()) return JNI_FALSE;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    struct stat st;
+    if ((real_stat != nullptr ? real_stat(real.c_str(), &st) : ::stat(real.c_str(), &st)) != 0) {
+        return JNI_FALSE;
+    }
+    struct timeval tv[2];
+    tv[0].tv_sec = st.st_atim.tv_sec;          // 保留 atime
+    tv[0].tv_usec = st.st_atim.tv_nsec / 1000;
+    tv[1].tv_sec = static_cast<time_t>(time / 1000);
+    tv[1].tv_usec = static_cast<suseconds_t>((time % 1000) * 1000);
+    if (::utimes(real.c_str(), tv) != 0) {
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("setLastModifiedTime0", real.c_str(), errno, 0);
+        return JNI_FALSE;
+    }
+    if (translated) java_io_record("setLastModifiedTime0", real.c_str(), 0, 0);
+    return JNI_TRUE;
+}
+
+/*
+ * File.setReadOnly() —— AOSP: stat 取 mode，chmod 去掉所有写位。
+ */
+static jboolean hooked_ufs_setReadOnly0(JNIEnv* env, jclass, jobject file) {
+    jstring jpath = ufs_get_path(env, file);
+    if (jpath == nullptr) return JNI_FALSE;
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    env->DeleteLocalRef(jpath);
+    if (real.empty()) return JNI_FALSE;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    struct stat st;
+    if ((real_stat != nullptr ? real_stat(real.c_str(), &st) : ::stat(real.c_str(), &st)) != 0) {
+        return JNI_FALSE;
+    }
+    mode_t mode = st.st_mode & ~(S_IWUSR | S_IWGRP | S_IWOTH);
+    if (::chmod(real.c_str(), mode) != 0) {
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("setReadOnly0", real.c_str(), errno, 0);
+        return JNI_FALSE;
+    }
+    if (translated) java_io_record("setReadOnly0", real.c_str(), 0, 0);
+    return JNI_TRUE;
+}
+
 
 
 
@@ -7392,6 +7486,15 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
                 {const_cast<char*>("getBooleanAttributes0"),
                  const_cast<char*>("(Ljava/lang/String;)I"),
                  reinterpret_cast<void*>(hooked_ufs_getBooleanAttributes0)},
+                {const_cast<char*>("getLastModifiedTime0"),
+                 const_cast<char*>("(Ljava/io/File;)J"),
+                 reinterpret_cast<void*>(hooked_ufs_getLastModifiedTime0)},
+                {const_cast<char*>("setLastModifiedTime0"),
+                 const_cast<char*>("(Ljava/io/File;J)Z"),
+                 reinterpret_cast<void*>(hooked_ufs_setLastModifiedTime0)},
+                {const_cast<char*>("setReadOnly0"),
+                 const_cast<char*>("(Ljava/io/File;)Z"),
+                 reinterpret_cast<void*>(hooked_ufs_setReadOnly0)},
             };
             const int n = static_cast<int>(sizeof(ufsMethods) / sizeof(ufsMethods[0]));
             for (int i = 0; i < n; ++i) {
