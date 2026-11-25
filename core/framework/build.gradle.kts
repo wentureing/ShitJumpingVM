@@ -26,4 +26,7 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
+
+    // 只做"行为铆钉"（golden），不引入 Robolectric：见 docs/计划/计划-黄金测试与覆盖率提升.md T1
+    testImplementation(libs.junit)
 }
