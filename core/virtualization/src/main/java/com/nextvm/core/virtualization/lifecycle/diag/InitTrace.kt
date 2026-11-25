@@ -294,6 +294,8 @@ internal object InitTrace {
         keys: Array<String>,
         sampled: Boolean
     ): FilterResult {
+        // recSize<=0 会让下面的偏移递增失效（死循环）——损坏/伪造 trace 必须先拒绝。
+        if (recSize <= 0) return FilterResult(ArrayList(), 0)
         val lines = ArrayList<String>()
         var total = 0
         var off = startOff

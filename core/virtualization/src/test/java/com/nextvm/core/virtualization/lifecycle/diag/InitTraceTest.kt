@@ -33,12 +33,13 @@ class InitTraceTest {
         val blob = java.io.ByteArrayOutputStream()
         blob.write(header.toString().toByteArray(Charsets.UTF_8))
         blob.write("SLOW".toByteArray(Charsets.UTF_8))
-        // SLOW 之后 32 字节块头，recSize 位于偏移 16
+        // 块头 32 字节，紧跟在 "SLOW" 之后；生产代码读 recSize 的位置是 blobOff + 16，
+        // 即块头偏移 12（不是 16）——写错会让 recSize=0，collectRecords 变成死循环。
         val head = ByteArray(32)
-        head[16] = (recSize and 0xFF).toByte()
-        head[17] = ((recSize shr 8) and 0xFF).toByte()
-        head[18] = ((recSize shr 16) and 0xFF).toByte()
-        head[19] = ((recSize shr 24) and 0xFF).toByte()
+        head[12] = (recSize and 0xFF).toByte()
+        head[13] = ((recSize shr 8) and 0xFF).toByte()
+        head[14] = ((recSize shr 16) and 0xFF).toByte()
+        head[15] = ((recSize shr 24) and 0xFF).toByte()
         blob.write(head)
         for ((mid, tid) in records) {
             val r = ByteArray(recSize)
@@ -137,6 +138,18 @@ class InitTraceTest {
             data, blobOff + 32, recSize, methods, arrayOf("com.A"), true
         )
         assertEquals(2, r.lines.size)
+    }
+
+    @Test
+    fun `T10 recSize 为 0 时立即返回不死循环`() {
+        // 回归：T8 曾因构造把 recSize 写到块头 [16]（生产读的是 [12]）而读到 0，
+        // collectRecords 里 off += 0 -> 死循环 -> CI 卡住 8 分钟。
+        val data = buildTrace(listOf(Triple(0x10, "com.A", "go")), listOf(0x10 to 1))
+        val te = InitTrace.textEnd(data)
+        val methods = InitTrace.parseMethods(String(data, 0, te, Charsets.UTF_8))
+        val r = InitTrace.collectRecords(data, te + 5 + 32, 0, methods, arrayOf("com.A"), false)
+        assertEquals(0, r.total)
+        assertEquals(0, r.lines.size)
     }
 
     @Test
