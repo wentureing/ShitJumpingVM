@@ -1,5 +1,6 @@
 package com.nextvm.core.common
 
+import com.nextvm.core.common.diagnostics.DiagChannel
 import java.io.File
 import timber.log.Timber
 
@@ -136,21 +137,14 @@ object DebugTrace {
      */
     private class FileLogTree(val file: File) : Timber.Tree() {
 
-        private val lock = Any()
+        // 落盘统一走 DiagChannel（阈值/失败静默/加锁都在那里）；本类只负责格式化。
+        private val channel = DiagChannel(file, MAX_BYTES)
 
         override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
             appendRaw(formatLine(priority, tag ?: "-", message, t))
         }
 
         /** 直接追加一整行（含换行），供缓冲刷盘复用。 */
-        fun appendRaw(line: String) {
-            synchronized(lock) {
-                try {
-                    if (file.length() > MAX_BYTES) file.writeText("")
-                    file.appendText(line)
-                } catch (_: Throwable) {
-                }
-            }
-        }
+        fun appendRaw(line: String) = channel.append(line)
     }
 }

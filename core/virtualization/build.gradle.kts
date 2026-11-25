@@ -41,4 +41,8 @@ dependencies {
     // Compose runtime (required by kotlin.compose plugin)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
+
+    // 纯 JVM 单测（不引 Robolectric）：先铆住启动链里的两个纯状态机
+    // StubRegistry / VirtualProcessManager，见 docs/计划/计划-黄金测试与覆盖率提升.md
+    testImplementation(libs.junit)
 }
