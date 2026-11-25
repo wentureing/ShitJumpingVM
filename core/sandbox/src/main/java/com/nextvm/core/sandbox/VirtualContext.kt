@@ -169,8 +169,17 @@ class VirtualContext(
         }
 
     override fun getExternalFilesDir(type: String?): File {
-        val dir = sandboxManager.getExternalAppFilesDir(instanceId, guestPackageName, type)
-        // v145：Via 的 fontDirectory 就是从这里取的，必须能看见返回值
+        // 先确保沙箱目录存在（无论如何都要建），再决定对外暴露哪条路径。
+        val sandboxDir = sandboxManager.getExternalAppFilesDir(instanceId, guestPackageName, type)
+        // pathFidelity：对外给 /storage/emulated/0/Android/data/<pkg>/files[/type]（真机形态），
+        // I/O 由 setupAppRedirections 的规则映射回 sandboxDir。
+        // 详见 docs/架构/架构-syntheticDataDir.md
+        val dir = if (pathFidelity) {
+            val base = VirtualConstants.syntheticExternalDir(guestPackageName)
+            File(if (type != null) "$base/files/$type" else "$base/files")
+        } else {
+            sandboxDir
+        }
         com.nextvm.core.common.DebugTrace.detail(
             "ctx", "getExternalFilesDir(type=$type) -> ${dir.absolutePath} exists=${dir.exists()}"
         )
@@ -181,8 +190,14 @@ class VirtualContext(
         return arrayOf(getExternalFilesDir(type))
     }
 
-    override fun getExternalCacheDir(): File =
-        sandboxManager.getExternalAppCacheDir(instanceId, guestPackageName)
+    override fun getExternalCacheDir(): File {
+        val sandboxDir = sandboxManager.getExternalAppCacheDir(instanceId, guestPackageName)
+        return if (pathFidelity) {
+            File(VirtualConstants.syntheticExternalCacheDir(guestPackageName))
+        } else {
+            sandboxDir
+        }
+    }
 
     override fun getExternalCacheDirs(): Array<File> {
         return arrayOf(externalCacheDir)
@@ -193,8 +208,14 @@ class VirtualContext(
         return arrayOf(sandboxManager.getExternalMediaDir(instanceId, guestPackageName))
     }
 
-    override fun getObbDir(): File =
-        sandboxManager.getExternalObbDir(instanceId, guestPackageName)
+    override fun getObbDir(): File {
+        val sandboxDir = sandboxManager.getExternalObbDir(instanceId, guestPackageName)
+        return if (pathFidelity) {
+            File(VirtualConstants.syntheticObbDir(guestPackageName))
+        } else {
+            sandboxDir
+        }
+    }
 
     override fun getObbDirs(): Array<File> {
         return arrayOf(obbDir)

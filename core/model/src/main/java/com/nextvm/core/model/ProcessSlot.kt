@@ -190,6 +190,18 @@ object VirtualConstants {
     fun syntheticApkPath(packageName: String): String =
         "/data/app/~~$SYNTHETIC_INSTALL_TOKEN==/$packageName-$SYNTHETIC_INSTALL_TOKEN==/base.apk"
 
+    /** 合成 external data 根：/storage/emulated/0/Android/data/<pkg>（真机形态，实际不存在） */
+    fun syntheticExternalDir(packageName: String): String =
+        "/storage/emulated/0/Android/data/$packageName"
+
+    /** 合成 external cache 目录（与 files 同级） */
+    fun syntheticExternalCacheDir(packageName: String): String =
+        "/storage/emulated/0/Android/data/$packageName/cache"
+
+    /** 合成 OBB 目录 */
+    fun syntheticObbDir(packageName: String): String =
+        "/storage/emulated/0/Android/obb/$packageName"
+
     /** Stock-install native lib dir shape. */
     fun syntheticLibDir(packageName: String): String =
         "/data/app/~~$SYNTHETIC_INSTALL_TOKEN==/$packageName-$SYNTHETIC_INSTALL_TOKEN==/lib/arm64"
