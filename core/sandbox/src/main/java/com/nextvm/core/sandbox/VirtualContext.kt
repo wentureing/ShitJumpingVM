@@ -42,6 +42,28 @@ class VirtualContext(
     private val pathFidelity: Boolean =
         VirtualConstants.isPathFidelityGuest(guestPackageName)
 
+    /**
+     * 内容目录（files/cache/external/obb/media）是否用合成路径。
+     *
+     * **2026-11-25 起默认 false**：WebView 的渲染跑在 isolated 进程
+     * （com.google.android.webview:sandboxed_process0，独立 uid），它既没有我们的
+     * hook、也不受我们的路径翻译约束。假路径（/data/user/0/<guest>/...）在真机上
+     * 根本不存在，WebView 打开 file:// 会直接 ERR_FILE_NOT_FOUND —— 实测 W18 与
+     * 主页空白都是这个原因。
+     *
+     * 保留 pathFidelity 的部分：getDataDir() / ApplicationInfo.dataDir 仍然返回
+     * 合成路径（那是反双开检测最常看的地方），其余内容目录返回**真实沙箱路径**，
+     * 这样文件真的存在，WebView 也能读到。
+     *
+     * 代价：guest 自己看到的内容目录里含宿主包名（暂时接受）。
+     * 详见 docs/架构/架构-WebView假路径换真路径.md
+     */
+    private val contentPathsUseReal: Boolean = false
+
+    private fun contentDir(sandboxDir: File, synthetic: () -> File): File =
+        if (pathFidelity && !contentPathsUseReal) synthetic() else sandboxDir
+
+
     /** Cached meta-data bundle from guest APK (parsed once) */
     private var cachedGuestMetaData: android.os.Bundle? = null
 
@@ -121,33 +143,25 @@ class VirtualContext(
     // === File system overrides ===
 
     override fun getFilesDir(): File {
-        val dir = if (pathFidelity) {
-            // Ensure the sandbox dir exists; return the stock-looking path.
-            // I/O on it is redirected to the sandbox by v135-pathfidelity.
-            sandboxManager.getFilesDir(instanceId)
+        val sandboxDir = sandboxManager.getFilesDir(instanceId)
+        val dir = contentDir(sandboxDir) {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "files")
-        } else {
-            sandboxManager.getFilesDir(instanceId)
         }
         com.nextvm.core.common.DebugTrace.detail("ctx", "getFilesDir -> ${dir.absolutePath}")
         return dir
     }
 
     override fun getCacheDir(): File =
-        if (pathFidelity) {
-            sandboxManager.getCacheDir(instanceId)
+        contentDir(sandboxManager.getCacheDir(instanceId)) {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "cache")
-        } else {
-            sandboxManager.getCacheDir(instanceId)
         }
 
+
     override fun getCodeCacheDir(): File =
-        if (pathFidelity) {
-            sandboxManager.getCodeCacheDir(instanceId)
+        contentDir(sandboxManager.getCodeCacheDir(instanceId)) {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "code_cache")
-        } else {
-            sandboxManager.getCodeCacheDir(instanceId)
         }
+
 
     override fun getDatabasePath(name: String): File {
         // Match framework behavior: absolute paths are returned as-is
@@ -174,11 +188,9 @@ class VirtualContext(
         // pathFidelity：对外给 /storage/emulated/0/Android/data/<pkg>/files[/type]（真机形态），
         // I/O 由 setupAppRedirections 的规则映射回 sandboxDir。
         // 详见 docs/架构/架构-syntheticDataDir.md
-        val dir = if (pathFidelity) {
+        val dir = contentDir(sandboxDir) {
             val base = VirtualConstants.syntheticExternalDir(guestPackageName)
             File(if (type != null) "$base/files/$type" else "$base/files")
-        } else {
-            sandboxDir
         }
         com.nextvm.core.common.DebugTrace.detail(
             "ctx", "getExternalFilesDir(type=$type) -> ${dir.absolutePath} exists=${dir.exists()}"
@@ -192,10 +204,8 @@ class VirtualContext(
 
     override fun getExternalCacheDir(): File {
         val sandboxDir = sandboxManager.getExternalAppCacheDir(instanceId, guestPackageName)
-        return if (pathFidelity) {
+        return contentDir(sandboxDir) {
             File(VirtualConstants.syntheticExternalCacheDir(guestPackageName))
-        } else {
-            sandboxDir
         }
     }
 
@@ -207,20 +217,14 @@ class VirtualContext(
     override fun getExternalMediaDirs(): Array<File> {
         val sandboxDir = sandboxManager.getExternalMediaDir(instanceId, guestPackageName)
         return arrayOf(
-            if (pathFidelity) {
-                File(VirtualConstants.syntheticMediaDir(guestPackageName))
-            } else {
-                sandboxDir
-            }
+            contentDir(sandboxDir) { File(VirtualConstants.syntheticMediaDir(guestPackageName)) }
         )
     }
 
     override fun getObbDir(): File {
         val sandboxDir = sandboxManager.getExternalObbDir(instanceId, guestPackageName)
-        return if (pathFidelity) {
+        return contentDir(sandboxDir) {
             File(VirtualConstants.syntheticObbDir(guestPackageName))
-        } else {
-            sandboxDir
         }
     }
 
@@ -229,12 +233,10 @@ class VirtualContext(
     }
 
     override fun getNoBackupFilesDir(): File =
-        if (pathFidelity) {
-            File(appDir, "no_backup").also { it.mkdirs() }
+        contentDir(File(appDir, "no_backup").also { it.mkdirs() }) {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "no_backup")
-        } else {
-            File(appDir, "no_backup").also { it.mkdirs() }
         }
+
 
     override fun getDataDir(): File {
         // v147：**这是 MIME 问题的关键点**。
