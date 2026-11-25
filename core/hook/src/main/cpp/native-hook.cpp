@@ -7043,6 +7043,152 @@ static jlong hooked_java_linux_opendir(JNIEnv* env, jclass, jstring path) {
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(d));
 }
 
+/*
+ * ===== java.io.UnixFileSystem 的 native 方法（File 的真正底层） =====
+ *
+ * 实测（dexdump 设备上的 core-oj.jar）：
+ *   UnixFileSystem.list0(File)                  NATIVE -> File.listFiles()
+ *   UnixFileSystem.createDirectory0(File)       NATIVE -> File.mkdir/mkdirs
+ *   UnixFileSystem.createFileExclusively0(String) NATIVE -> File.createNewFile
+ *
+ * 也就是说 File 的关键操作**不经过 libcore.io.Linux**，而是直接调这几个 native 方法。
+ * 只 hook Linux 覆盖不到 File.listFiles()/mkdirs()，这正是"存了但看不到"的原因。
+ *
+ * 签名与语义照 AOSP：
+ *   private native String[] list0(File file);
+ *   private native boolean createDirectory0(File file);
+ *   private native boolean createFileExclusively0(String path);
+ * 都是"失败返回 false/null"，不抛异常（与 Linux.* 的 ErrnoException 语义不同）。
+ */
+
+/* 取 File 的路径字符串（File.getPath()），调用方负责 DeleteLocalRef */
+static jstring ufs_get_path(JNIEnv* env, jobject file) {
+    if (file == nullptr) return nullptr;
+    jclass fileCls = env->GetObjectClass(file);
+    if (fileCls == nullptr) return nullptr;
+    jmethodID getPath = env->GetMethodID(fileCls, "getPath", "()Ljava/lang/String;");
+    env->DeleteLocalRef(fileCls);
+    if (getPath == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
+    jstring p = static_cast<jstring>(env->CallObjectMethod(file, getPath));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    return p;
+}
+
+/* File.listFiles() 的底层：列目录，返回文件名数组（不含路径） */
+static jobjectArray hooked_ufs_list0(JNIEnv* env, jclass, jobject file) {
+    jstring jpath = ufs_get_path(env, file);
+    if (jpath == nullptr) return nullptr;
+
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    env->DeleteLocalRef(jpath);
+    if (real.empty()) return nullptr;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    DIR* d = (real_opendir != nullptr) ? real_opendir(real.c_str()) : ::opendir(real.c_str());
+    if (d == nullptr) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("list0", real.c_str(), err, 0);
+        // AOSP 的 list0 失败返回 null（File.list/listFiles 随后返回 null）
+        return nullptr;
+    }
+
+    std::vector<std::string> names;
+    for (;;) {
+        errno = 0;
+        struct dirent* e = readdir(d);
+        if (e == nullptr) break;
+        const char* n = e->d_name;
+        if (n == nullptr) continue;
+        if (strcmp(n, ".") == 0 || strcmp(n, "..") == 0) continue;
+        names.emplace_back(n);
+    }
+    closedir(d);
+
+    jclass strCls = env->FindClass("java/lang/String");
+    if (strCls == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
+    jobjectArray arr = env->NewObjectArray(static_cast<jsize>(names.size()), strCls, nullptr);
+    env->DeleteLocalRef(strCls);
+    if (arr == nullptr) return nullptr;
+    for (size_t k = 0; k < names.size(); ++k) {
+        jstring s = env->NewStringUTF(names[k].c_str());
+        if (s != nullptr) {
+            env->SetObjectArrayElement(arr, static_cast<jsize>(k), s);
+            env->DeleteLocalRef(s);
+        }
+    }
+    if (translated) java_io_record("list0", real.c_str(), 0, 0);
+    return arr;
+}
+
+/* File.mkdir/mkdirs 的底层：只建最后一级，父目录不存在则失败返回 false */
+static jboolean hooked_ufs_createDirectory0(JNIEnv* env, jclass, jobject file) {
+    jstring jpath = ufs_get_path(env, file);
+    if (jpath == nullptr) return JNI_FALSE;
+
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    env->DeleteLocalRef(jpath);
+    if (real.empty()) return JNI_FALSE;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    int r;
+    do {
+        r = (real_mkdir != nullptr) ? real_mkdir(real.c_str(), 0770)
+                                    : ::mkdir(real.c_str(), 0770);
+    } while (r == -1 && errno == EINTR);
+
+    if (r == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("createDirectory0", real.c_str(), err, 0);
+        return JNI_FALSE;   // AOSP: 失败返回 false，不抛异常
+    }
+    if (translated) java_io_record("createDirectory0", real.c_str(), 0, 0);
+    return JNI_TRUE;
+}
+
+/* File.createNewFile 的底层 */
+static jboolean hooked_ufs_createFileExclusively0(JNIEnv* env, jclass, jstring jpath) {
+    if (jpath == nullptr) return JNI_FALSE;
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    if (real.empty()) return JNI_FALSE;
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    int fd;
+    do {
+        fd = ::open(real.c_str(), O_RDWR | O_CREAT | O_EXCL, 0666);
+    } while (fd == -1 && errno == EINTR);
+
+    if (fd == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("createFileExclusively0", real.c_str(), err, 0);
+        return JNI_FALSE;
+    }
+    ::close(fd);
+    if (translated) java_io_record("createFileExclusively0", real.c_str(), 0, 0);
+    return JNI_TRUE;
+}
+
+
 
 static bool install_java_io_hooks(JNIEnv* env, bool translate) {
     java_io_ensure_real();
@@ -7072,9 +7218,6 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
         {const_cast<char*>("rename"),
          const_cast<char*>("(Ljava/lang/String;Ljava/lang/String;)V"),
          reinterpret_cast<void*>(hooked_java_linux_rename)},
-        {const_cast<char*>("opendir"),
-         const_cast<char*>("(Ljava/lang/String;)J"),
-         reinterpret_cast<void*>(hooked_java_linux_opendir)},
     };
 
     // 逐个注册：批量 RegisterNatives 是全或无，失败时无法定位是哪个方法/什么异常。
@@ -7100,6 +7243,43 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
          registered, kMethodCount, translate ? 1 : 0);
     const bool allOk = (registered == kMethodCount);
     env->DeleteLocalRef(cls);
+    // ===== java.io.UnixFileSystem：File.listFiles / mkdirs / createNewFile 的真正底层 =====
+    // 实测 dexdump：这三个都是 native 方法，且 File 不走 libcore.io.Linux。
+    {
+        jclass ufs = find_class_via_forname(env, "java/io/UnixFileSystem");
+        if (ufs == nullptr) {
+            LOGE("installJavaIoHooks: UnixFileSystem class not found");
+        } else {
+            JNINativeMethod ufsMethods[] = {
+                {const_cast<char*>("list0"),
+                 const_cast<char*>("(Ljava/io/File;)[Ljava/lang/String;"),
+                 reinterpret_cast<void*>(hooked_ufs_list0)},
+                {const_cast<char*>("createDirectory0"),
+                 const_cast<char*>("(Ljava/io/File;)Z"),
+                 reinterpret_cast<void*>(hooked_ufs_createDirectory0)},
+                {const_cast<char*>("createFileExclusively0"),
+                 const_cast<char*>("(Ljava/lang/String;)Z"),
+                 reinterpret_cast<void*>(hooked_ufs_createFileExclusively0)},
+            };
+            const int n = static_cast<int>(sizeof(ufsMethods) / sizeof(ufsMethods[0]));
+            for (int i = 0; i < n; ++i) {
+                jint one = env->RegisterNatives(ufs, &ufsMethods[i], 1);
+                if (one == JNI_OK) {
+                    LOGI("installJavaIoHooks: ufs registered %s %s",
+                         ufsMethods[i].name, ufsMethods[i].signature);
+                } else {
+                    LOGE("installJavaIoHooks: ufs FAILED %s %s code=%d",
+                         ufsMethods[i].name, ufsMethods[i].signature, one);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionDescribe();
+                        env->ExceptionClear();
+                    }
+                }
+            }
+            env->DeleteLocalRef(ufs);
+        }
+    }
+
     if (!allOk) {
         LOGE("installJavaIoHooks: only %d/%d registered", registered, kMethodCount);
         return false;
