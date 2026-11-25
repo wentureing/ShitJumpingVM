@@ -57,6 +57,10 @@ class ContainerSelfCheckTest {
             "临时写入文件应被清理",
             File(sandbox, "selfcheck/w/f.txt").exists()
         )
+        assertFalse(
+            "临时目录也必须删干净（不能留在用户可见目录里）",
+            File(sandbox, "selfcheck").exists()
+        )
     }
 
     @Test

@@ -70,7 +70,11 @@ internal class ContainerSelfCheck(
         Check("S3", "写入落在沙箱", inSandbox && f.exists(), "target=$target inSandbox=$inSandbox")
     }) {
         paths.remove(PREFIX_W)
-        runCatching { File(sandboxRoot, "selfcheck/w/f.txt").delete() }
+        // 自检不能在任何"用户可见目录"里留下痕迹：文件与两级目录都要删干净。
+        val base = File(sandboxRoot, "selfcheck")
+        runCatching { File(base, "w/f.txt").delete() }
+        runCatching { File(base, "w").delete() }
+        runCatching { base.delete() }
     }
 
     private fun unknownPathUntouched(): Check = guard("S4", "未知路径不误改", {
