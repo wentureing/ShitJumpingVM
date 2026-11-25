@@ -1867,6 +1867,20 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
     if (name[0] == '\0') return 0;
     if (strstr(name, "libnextvm") != nullptr) return 0;
 
+    // ===== 渲染修复（sandboxsensor，移植自 fork）=====
+    // 图形栈永不 patch：实测 patch 后驱动编译 shader 时拿不到正确
+    // 缓存/属性，导致 RenderThread SIGABRT（栈顶在 libllvm-glnext，
+    // 但病因是这里 —— 栈顶在驱动里不代表病因在驱动里）。
+    if (strstr(name, "libGLES") != nullptr ||
+        strstr(name, "libEGL") != nullptr ||
+        strstr(name, "eglSubDriver") != nullptr ||
+        strstr(name, "libvulkan") != nullptr ||
+        strstr(name, "vulkan.adreno") != nullptr ||
+        strstr(name, "libllvm-glnext") != nullptr) {
+        LOGI("GOT patch skipped (graphics stack): %s", name);
+        return 0;
+    }
+
     // v87: open the mmap-probe window when a shell loader lib first
     // appears in the link map. Set before every early return below so
     // even the v57-exempt CM libDexHelper.so opens the window.
