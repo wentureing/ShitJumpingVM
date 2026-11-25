@@ -6683,6 +6683,44 @@ static jmethodID g_nfe_ctor = nullptr;
 static std::atomic<bool> g_java_io_refs_ready{false};
 
 /** 解析并缓存 FileDescriptor / ErrnoException 的构造器（只做一次）。 */
+/*
+ * 解析类：先用 FindClass，失败再用 Class.forName 走 boot ClassLoader。
+ *
+ * 为什么需要：libcore.io.ErrnoException 是 boot classpath 上的隐藏类。
+ * 本 JNI 库的 FindClass 会从「调用它的类」的 ClassLoader 查找；
+ * 在 v81-apk-watch 这类自建线程里调用时可能拿不到 -> 返回 nullptr
+ * -> 之后抛不出 ErrnoException -> 退回 FileNotFoundException
+ * -> File.exists() 的 UnixFileSystem.checkAccess 只 catch ErrnoException
+ * -> 异常逃逸 -> 线程 FATAL（v147 的真实根因，比当时记录的更准确）。
+ */
+static jclass find_class_via_forname(JNIEnv* env, const char* slashName) {
+    jclass local = env->FindClass(slashName);
+    if (local != nullptr) return local;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    // Class.forName 用调用者(Class 本身, boot loader)的 ClassLoader -> 能拿到 boot classpath 类
+    jclass classCls = env->FindClass("java/lang/Class");
+    if (classCls == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID forName = env->GetStaticMethodID(
+        classCls, "forName", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (forName == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(classCls);
+        return nullptr;
+    }
+    std::string dotted(slashName);
+    for (auto& c : dotted) if (c == '/') c = '.';
+    jstring jname = env->NewStringUTF(dotted.c_str());
+    jobject cls = env->CallStaticObjectMethod(classCls, forName, jname);
+    env->DeleteLocalRef(jname);
+    env->DeleteLocalRef(classCls);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return static_cast<jclass>(cls);
+}
+
 static bool java_io_refs(JNIEnv* env) {
     if (g_java_io_refs_ready.load()) return true;
 
@@ -6701,7 +6739,7 @@ static bool java_io_refs(JNIEnv* env) {
     }
 
     if (g_errno_class == nullptr) {
-        jclass local = env->FindClass("libcore/io/ErrnoException");
+        jclass local = find_class_via_forname(env, "libcore/io/ErrnoException");
         if (local != nullptr) {
             g_errno_class = static_cast<jclass>(env->NewGlobalRef(local));
             env->DeleteLocalRef(local);
@@ -6729,7 +6767,10 @@ static bool java_io_refs(JNIEnv* env) {
         }
     }
 
-    bool ok = (g_fd_class != nullptr && g_fd_ctor != nullptr && g_fd_set_int != nullptr);
+    // 关键：必须把 ErrnoException 也算进 ok。否则它解析失败时 refs_ready 仍会被置 true，
+    // 之后永远 fallback 到 FileNotFoundException -> File.exists() 的 checkAccess 捕获不到 -> 崩溃。
+    bool ok = (g_fd_class != nullptr && g_fd_ctor != nullptr && g_fd_set_int != nullptr &&
+               g_errno_class != nullptr && g_errno_ctor != nullptr);
     if (ok) g_java_io_refs_ready.store(true);
     return ok;
 }
@@ -6749,17 +6790,12 @@ static void java_io_throw_errno(JNIEnv* env, const char* functionName, int err,
         }
         if (env->ExceptionCheck()) env->ExceptionClear();
     }
-    if (g_nfe_class != nullptr && g_nfe_ctor != nullptr) {
-        jstring msg = env->NewStringUTF(path == nullptr ? "" : path);
-        jobject exc = env->NewObject(g_nfe_class, g_nfe_ctor, msg);
-        env->DeleteLocalRef(msg);
-        if (exc != nullptr) {
-            env->Throw(static_cast<jthrowable>(exc));
-            env->DeleteLocalRef(exc);
-            return;
-        }
-        if (env->ExceptionCheck()) env->ExceptionClear();
-    }
+    // ===== 只允许抛 ErrnoException（AOSP 语义） =====
+    // 绝不抛 FileNotFoundException：UnixFileSystem.checkAccess 只 catch ErrnoException，
+    // 别的异常会直接逃逸，把 File.exists() 的调用线程打成 FATAL。
+    // 万一 ErrnoException 仍然拿不到，宁可不抛（调用方看到失败值），也不要抛错类型。
+    LOGI("java_io_throw_errno: ErrnoException unavailable (errno=%d path=%s)",
+         err, path == nullptr ? "" : path);
 }
 
 // ==================== v148：最近 open/access 环形缓冲（调试工具） ====================
