@@ -133,10 +133,6 @@ object PathSpoofConfig {
         }
     }
 
-    /** 与 PathKind 枚举保持一致；改这里要同步 com.nextvm.core.model.PathKind。 */
-    private val KNOWN_KINDS = listOf(
-        "DATA_ROOT", "FILES", "CACHE", "CODE_CACHE", "NO_BACKUP", "DATABASES", "APP_DIR",
-        "EXTERNAL_DATA", "EXTERNAL_FILES", "EXTERNAL_CACHE", "OBB", "MEDIA",
-        "APK", "NATIVE_LIB",
-    )
+    /** 路径族清单：由枚举派生，避免与 [PathKind] 两处维护。 */
+    private val KNOWN_KINDS: List<String> = PathKind.entries.map { it.name }
 }

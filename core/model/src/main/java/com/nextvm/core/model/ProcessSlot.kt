@@ -189,31 +189,31 @@ object VirtualConstants {
     }
 
 
-    /** Real stock data dir for the guest package (deterministic). */
+    /** 合成 data 根（模板唯一来源：[PathKinds]）。 */
     fun syntheticDataDir(packageName: String): String =
-        "/data/user/0/$packageName"
+        PathKinds.synthetic(PathKind.DATA_ROOT, packageName)
 
-    /** Stock-install APK path shape (same token as the maps spoof). */
+    /** 合成 APK 路径（token 必须与 native maps 伪造一致）。 */
     fun syntheticApkPath(packageName: String): String =
-        "/data/app/~~$SYNTHETIC_INSTALL_TOKEN==/$packageName-$SYNTHETIC_INSTALL_TOKEN==/base.apk"
+        PathKinds.synthetic(PathKind.APK, packageName)
 
     /** 合成 external data 根：/storage/emulated/0/Android/data/<pkg>（真机形态，实际不存在） */
     fun syntheticExternalDir(packageName: String): String =
-        "/storage/emulated/0/Android/data/$packageName"
+        PathKinds.synthetic(PathKind.EXTERNAL_DATA, packageName)
 
     /** 合成 external cache 目录（与 files 同级） */
     fun syntheticExternalCacheDir(packageName: String): String =
-        "/storage/emulated/0/Android/data/$packageName/cache"
+        PathKinds.synthetic(PathKind.EXTERNAL_CACHE, packageName)
 
     /** 合成 media 目录（getExternalMediaDirs） */
     fun syntheticMediaDir(packageName: String): String =
-        "/storage/emulated/0/Android/media/$packageName"
+        PathKinds.synthetic(PathKind.MEDIA, packageName)
 
     /** 合成 OBB 目录 */
     fun syntheticObbDir(packageName: String): String =
-        "/storage/emulated/0/Android/obb/$packageName"
+        PathKinds.synthetic(PathKind.OBB, packageName)
 
-    /** Stock-install native lib dir shape. */
+    /** 合成 native lib 目录。 */
     fun syntheticLibDir(packageName: String): String =
-        "/data/app/~~$SYNTHETIC_INSTALL_TOKEN==/$packageName-$SYNTHETIC_INSTALL_TOKEN==/lib/arm64"
+        PathKinds.synthetic(PathKind.NATIVE_LIB, packageName)
 }
