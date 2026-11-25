@@ -7077,11 +7077,31 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
          reinterpret_cast<void*>(hooked_java_linux_opendir)},
     };
 
+    // 逐个注册：批量 RegisterNatives 是全或无，失败时无法定位是哪个方法/什么异常。
+    // 任何一个失败都打出来（含 ExceptionDescribe），并继续注册其余方法。
     const int kMethodCount = static_cast<int>(sizeof(methods) / sizeof(methods[0]));
-    jint r = env->RegisterNatives(cls, methods, kMethodCount);
+    int registered = 0;
+    for (int i = 0; i < kMethodCount; ++i) {
+        jint one = env->RegisterNatives(cls, &methods[i], 1);
+        if (one == JNI_OK) {
+            registered++;
+            LOGI("installJavaIoHooks: registered %s %s",
+                 methods[i].name, methods[i].signature);
+        } else {
+            LOGE("installJavaIoHooks: FAILED %s %s code=%d",
+                 methods[i].name, methods[i].signature, one);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+            }
+        }
+    }
+    LOGI("installJavaIoHooks: %d/%d registered (translate=%d)",
+         registered, kMethodCount, translate ? 1 : 0);
+    const bool allOk = (registered == kMethodCount);
     env->DeleteLocalRef(cls);
-    if (r != JNI_OK) {
-        LOGE("installJavaIoHooks: RegisterNatives failed code=%d", r);
+    if (!allOk) {
+        LOGE("installJavaIoHooks: only %d/%d registered", registered, kMethodCount);
         return false;
     }
     LOGI("installJavaIoHooks: SUCCESS (translate=%d)", translate ? 1 : 0);
