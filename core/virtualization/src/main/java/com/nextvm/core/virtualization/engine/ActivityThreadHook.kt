@@ -79,6 +79,7 @@ class ActivityThreadHook(
     private var originalCallback: Handler.Callback? = null
 
     /** v150：事务投递观测（拆出的独立职责，纯观测、永不抛） */
+    private val preCreateSeq = java.util.concurrent.atomic.AtomicInteger()
     private val diagnostics = TransactionDiagnostics(context)
     private var installed = false
 
@@ -1284,6 +1285,13 @@ class ActivityThreadHook(
     internal fun onActivityPreCreate(activity: android.app.Activity) {
         com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
             .log("preCreate enter " + activity.javaClass.name)
+        // 限流：前 20 次 + 之后每 100 次（Activity 回调很频繁，全打会刷屏）
+        val pcSeq = preCreateSeq.incrementAndGet()
+        if (pcSeq <= 20 || pcSeq % 100 == 0) {
+            com.nextvm.core.common.DebugTrace.detail(
+                "instr", "onActivityPreCreate #$pcSeq ${activity.javaClass.name}"
+            )
+        }
         var instanceId = lastLaunchInstanceId
         var apkPath = lastLaunchApkPath
         var packageName = lastLaunchPackageName

@@ -2092,6 +2092,9 @@ class VirtualApplicationManager @Inject constructor(
         application: Application,
         providerMetaData: Map<String, Bundle> = emptyMap()
     ) {
+        com.nextvm.core.common.DebugTrace.event(
+            "provider", "initContentProviders enter n=${providers.size}"
+        )
         Timber.tag(TAG).d("Installing ${providers.size} ContentProviders for $instanceId")
         GuestBreadcrumb.log("providers begin n=" + providers.size +
             " list=" + providers.joinToString(","))

@@ -33,12 +33,13 @@ internal fun VirtualApplicationManager.registerGuestRedirections(
         nativeHookBridge.setupAppRedirections(guestPkg, instanceId, appDir.absolutePath)
 
         val rules = nativeHookBridge.getPathRedirectSnapshot().size
+        val nativeRules = nativeHookBridge.getNativeRedirectCount()
         DebugTrace.event(
             "v142",
-            "registered rules=$rules appDir=${appDir.absolutePath} sdcard=${sdcardDir.absolutePath}"
+            "registered rules kotlin=$rules native=$nativeRules appDir=${appDir.absolutePath} sdcard=${sdcardDir.absolutePath}"
         )
         GuestBreadcrumb.log(
-            "v142-redirect registered rules=$rules appDir=${appDir.absolutePath} " +
+            "v142-redirect registered rules kotlin=$rules native=$nativeRules appDir=${appDir.absolutePath} " +
                 "sdcard=${sdcardDir.absolutePath}"
         )
     } catch (t: Throwable) {
