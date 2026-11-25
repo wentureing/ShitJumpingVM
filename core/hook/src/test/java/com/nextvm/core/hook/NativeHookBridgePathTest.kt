@@ -636,7 +636,9 @@ class NativeHookBridgePathTest {
      */
     @Test
     fun `T41 合成路径与沙箱真身一一对应`() {
-        bridge.setupPathFidelityRedirections(guest, "i1", sandbox, "/apk/x.apk")
+        // APK 的真身由调用方给出，真实形态是容器私有目录下的 virtual/apks/<instance>.apk；
+        // 这里必须传沙箱内路径，否则"所有目标都在沙箱内"这条断言会误判（T41 自身的口径）。
+        bridge.setupPathFidelityRedirections(guest, "i1", sandbox, "$sandbox/apks/x.apk")
         val synthRoots = listOf(
             VirtualConstants.syntheticDataDir(guest),
             VirtualConstants.syntheticExternalDir(guest),
