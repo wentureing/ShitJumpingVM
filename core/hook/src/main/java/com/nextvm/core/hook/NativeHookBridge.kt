@@ -432,15 +432,24 @@ class NativeHookBridge @Inject constructor() {
         )
 
 
-        // 方案A：宿主 external 兜底。说明见 docs/设计/设计-按进程区分的宿主路径兜底.md
+        // 宿主包名 external 兜底。说明见 docs/设计/设计-按进程区分的宿主路径兜底.md
+        //
+        // 目标必须是 <sandbox>/sdcard/Android/data/<guest>，不能是 host_ext：
+        //   guest 保存时走 getExternalFilesDir("xxx")，VirtualContext 返回
+        //     <sandbox>/sdcard/Android/data/<guest>/files/xxx
+        //   而读取时 guest 常自己拼
+        //     /storage/emulated/0/Android/data/<getOpPackageName()>/files/xxx
+        //   getOpPackageName() 返回宿主包名（必要偏差，避免 AppOpsManager 校验抛错），
+        //   于是拼出 .../Android/data/com.nextvm.app/... —— 必须落到 guest 自己的 external 目录，
+        //   否则"保存到 A、从 B 读"，列表永远是空的。
         if (HOST_EXTERNAL_FALLBACK) {
-            val hostExtDir = "$sandboxDataDir/host_ext/"
-            addPathRedirection(HOST_EXT_PREFIX_A, hostExtDir)
-            addPathRedirection(HOST_EXT_PREFIX_B, hostExtDir)
-            runCatching { java.io.File("$sandboxDataDir/host_ext").mkdirs() }
+            val guestExternalDir = "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
+            addPathRedirection(HOST_EXT_PREFIX_A, guestExternalDir)
+            addPathRedirection(HOST_EXT_PREFIX_B, guestExternalDir)
+            runCatching { java.io.File(guestExternalDir).mkdirs() }
             Timber.tag(TAG).i(
-                "Host external fallback ON: %s|%s -> %s",
-                HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B, hostExtDir
+                "Host-package external fallback ON: %s|%s -> %s",
+                HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B, guestExternalDir
             )
         }
 
