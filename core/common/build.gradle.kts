@@ -24,4 +24,7 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.hiddenapibypass)
+
+    // 诊断抽象层的契约测试（纯 JVM，不依赖 Android）
+    testImplementation(libs.junit)
 }
