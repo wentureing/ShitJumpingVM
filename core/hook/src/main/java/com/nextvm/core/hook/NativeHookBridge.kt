@@ -176,22 +176,14 @@ class NativeHookBridge @Inject constructor() {
         }
         Timber.tag(TAG).w("Runtime.nativeLoad hook not available \u2014 CheckJNI may still abort on null caller")    }
 
-    // Path redirection rules: fromPrefix -> toPrefix
-    private val pathRedirections = ConcurrentHashMap<String, String>()
+    // 路径规则/隐藏/fake content/属性覆盖的**状态与纯翻译**在 PathRuleStore（纯 Kotlin，可独立单测）。
+    // 本类只保留：注册时机与顺序、native 同步、日志（含限流）。
+    private val store = PathRuleStore()
 
     // /proc/self spoofing data
     private var spoofedPackageName: String? = null
     private var spoofedPid: Int = -1
     private var spoofedProcessName: String? = null
-
-    // System property overrides
-    private val propertyOverrides = ConcurrentHashMap<String, String>()
-
-    // Paths to hide (return ENOENT)
-    private val hiddenPaths = ConcurrentHashMap.newKeySet<String>()
-
-    // Fake file content overrides: path -> content
-    private val fakeFileContent = ConcurrentHashMap<String, ByteArray>()
 
     // Track initialization state
     private var initialized = false
@@ -295,7 +287,7 @@ class NativeHookBridge @Inject constructor() {
         // redirect native file opens.
         if (nativeHooksAvailable) {
             try {
-                pathRedirections.forEach { (from, to) ->
+                store.snapshot().forEach { (from, to) ->
                     nativeAddPathRedirection(from, to)
                 }
             } catch (e: Exception) {
@@ -304,8 +296,8 @@ class NativeHookBridge @Inject constructor() {
         }
 
         // Add default hidden paths (root/emulator detection files)
-        ROOT_PATHS.forEach { hiddenPaths.add(it) }
-        EMULATOR_PATHS.forEach { hiddenPaths.add(it) }
+        ROOT_PATHS.forEach { store.hide(it) }
+        EMULATOR_PATHS.forEach { store.hide(it) }
 
         // v141/v145: Java 层文件 I/O 重定向（RegisterNatives 替换 libcore.io.Linux 的
         // native 方法）。必须在 native 库加载 + 路径规则同步之后安装，因为替换实现
@@ -340,10 +332,10 @@ class NativeHookBridge @Inject constructor() {
             com.nextvm.core.common.DebugTrace.event(
                 "javaIo",
                 "installed=" + com.nextvm.core.hook.JavaIoHooks.installed +
-                    " nativeAvailable=$nativeHooksAvailable rules=${pathRedirections.size}"
+                    " nativeAvailable=$nativeHooksAvailable rules=${store.count()}"
             )
             // 详细：规则明细（排查「为什么没翻译」时第一眼看这个）
-            pathRedirections.entries.take(20).forEach { (from, to) ->
+            store.snapshot().entries.take(20).forEach { (from, to) ->
                 com.nextvm.core.common.DebugTrace.detail("javaIo", "rule $from -> $to")
             }
         }
@@ -367,12 +359,12 @@ class NativeHookBridge @Inject constructor() {
      */
     // v139 probe getters (public for VirtualEngine's redirect probe;
     // isNativeAvailable already exists below).
-    fun getPathRedirectSnapshot(): Map<String, String> = pathRedirections.toMap()
+    fun getPathRedirectSnapshot(): Map<String, String> = store.snapshot()
     fun getNativeRedirectCount(): Int =
         try { nativeGetRedirectCount() } catch (e: Exception) { -1 }
 
     fun addPathRedirection(fromPrefix: String, toPrefix: String) {
-        pathRedirections[fromPrefix] = toPrefix
+        store.add(fromPrefix, toPrefix)
         Timber.tag(TAG).d("Path redirect: $fromPrefix -> $toPrefix")
 
         // If native hooks are available, push to native layer
@@ -386,7 +378,7 @@ class NativeHookBridge @Inject constructor() {
      * Remove a path redirection.
      */
     fun removePathRedirection(fromPrefix: String) {
-        pathRedirections.remove(fromPrefix)
+        store.remove(fromPrefix)
         if (nativeHooksAvailable) {
             nativeRemovePathRedirection(fromPrefix)
         }
@@ -396,7 +388,7 @@ class NativeHookBridge @Inject constructor() {
      * Clear all path redirections.
      */
     fun clearPathRedirections() {
-        pathRedirections.clear()
+        store.clear()
         if (nativeHooksAvailable) {
             nativeClearPathRedirections()
         }
@@ -645,15 +637,15 @@ class NativeHookBridge @Inject constructor() {
         spoofedProcessName = packageName
 
         // Create fake /proc/self/cmdline content
-        fakeFileContent[PROC_SELF_CMDLINE] = packageName.toByteArray() + byteArrayOf(0)
+        store.setFakeContent(PROC_SELF_CMDLINE, packageName.toByteArray() + byteArrayOf(0))
 
         // Create fake /proc/self/comm content
         val commName = packageName.take(15) // Linux limits comm to 15 chars
-        fakeFileContent[PROC_SELF_COMM] = "$commName\n".toByteArray()
+        store.setFakeContent(PROC_SELF_COMM, "$commName\n")
 
         // Create sanitized /proc/self/maps (hide NEXTVM entries)
         // Actual maps content will be filtered on read
-        fakeFileContent[PROC_SELF_STATUS] = buildFakeProcStatus(pid, packageName)
+        store.setFakeContent(PROC_SELF_STATUS, buildFakeProcStatus(pid, packageName))
 
         if (nativeHooksAvailable) {
             nativeSpoofProcSelf(pid, packageName)
@@ -708,7 +700,7 @@ class NativeHookBridge @Inject constructor() {
      * Hooks __system_property_get to return our value.
      */
     fun spoofSystemProperty(key: String, value: String) {
-        propertyOverrides[key] = value
+        store.overrideProperty(key, value)
 
         if (nativeHooksAvailable) {
             nativeSpoofSystemProperty(key, value)
@@ -730,7 +722,7 @@ class NativeHookBridge @Inject constructor() {
      * Hide a path (make it appear non-existent).
      */
     fun hidePath(path: String) {
-        hiddenPaths.add(path)
+        store.hide(path)
         if (nativeHooksAvailable) {
             nativeHidePath(path)
         }
@@ -740,7 +732,7 @@ class NativeHookBridge @Inject constructor() {
      * Unhide a path.
      */
     fun unhidePath(path: String) {
-        hiddenPaths.remove(path)
+        store.unhide(path)
         if (nativeHooksAvailable) {
             nativeUnhidePath(path)
         }
@@ -751,14 +743,14 @@ class NativeHookBridge @Inject constructor() {
      * When the path is read, the fake content is returned instead.
      */
     fun setFakeFileContent(path: String, content: ByteArray) {
-        fakeFileContent[path] = content
+        store.setFakeContent(path, content)
     }
 
     /**
      * Set fake text content for a file path.
      */
     fun setFakeFileContent(path: String, content: String) {
-        fakeFileContent[path] = content.toByteArray()
+        store.setFakeContent(path, content)
     }
 
     /** 路径翻译日志的限流计数（高频路径不能刷屏）。 */
@@ -772,45 +764,12 @@ class NativeHookBridge @Inject constructor() {
      * Public API for other components to use.
      */
     fun translatePath(originalPath: String): String {
-        // Check if path should be hidden
-        if (hiddenPaths.contains(originalPath)) {
-            return "/dev/null" // Will fail to open properly
+        val result = store.translate(originalPath)
+        // hidden 命中时不记翻译日志（与原实现一致），避免淹没真正的翻译记录
+        if (!result.hiddenHit) {
+            logPathTranslation(originalPath, result.path, result.matched)
         }
-
-        // 规则是前缀；以 '/' 结尾的规则还"拥有自己的根形态"（去掉尾斜杠的那个字符串）。
-        // 有效长度最长者胜，平局时真正的前缀优先；语义见 docs/输出/变更/20261125-族根匹配语义.md
-        var bestMatch = ""
-        var bestRedirect = ""
-        var bestLen = 0
-        var bestIsRoot = false
-        for ((from, to) in pathRedirections) {
-            val isPrefix = originalPath.startsWith(from)
-            val isRoot = !isPrefix && from.endsWith("/") &&
-                from.length == originalPath.length + 1 && from.startsWith(originalPath)
-            if (!isPrefix && !isRoot) continue
-            val effectiveLen = if (isRoot) originalPath.length else from.length
-            if (!(effectiveLen > bestLen || (effectiveLen == bestLen && bestIsRoot && !isRoot))) continue
-            bestLen = effectiveLen
-            bestMatch = if (isRoot) originalPath else from
-            bestRedirect = if (isRoot) to.trimEnd('/') else to
-            bestIsRoot = isRoot
-        }
-
-        if (bestMatch.isNotEmpty()) {
-            val rest = originalPath.substring(bestMatch.length)
-            val redirect = when {
-                rest.isEmpty() -> bestRedirect
-                bestRedirect.endsWith("/") && rest.startsWith("/") -> bestRedirect + rest.substring(1)
-                bestRedirect.endsWith("/") -> bestRedirect + rest
-                rest.startsWith("/") -> bestRedirect + rest
-                else -> "$bestRedirect/$rest"
-            }
-            logPathTranslation(originalPath, redirect, bestMatch)
-            return redirect
-        }
-
-        logPathTranslation(originalPath, originalPath, null)
-        return originalPath
+        return result.path
     }
 
     /**
@@ -837,8 +796,9 @@ class NativeHookBridge @Inject constructor() {
      */
     fun dumpPathRedirections(tag: String = "path") {
         if (!DebugFlags.isDebugBuild()) return
-        DebugTrace.event(tag, "path rules=${pathRedirections.size}")
-        pathRedirections.entries.sortedBy { it.key }.forEach { (from, to) ->
+        val rules = store.snapshot()
+        DebugTrace.event(tag, "path rules=${rules.size}")
+        rules.entries.sortedBy { it.key }.forEach { (from, to) ->
             DebugTrace.detail(tag, "  $from  =>  $to")
         }
     }
@@ -846,32 +806,32 @@ class NativeHookBridge @Inject constructor() {
     /**
      * Check if a path is hidden.
      */
-    fun isPathHidden(path: String): Boolean = hiddenPaths.contains(path)
+    fun isPathHidden(path: String): Boolean = store.isHidden(path)
 
     /**
      * Check if fake content exists for a path.
      */
-    fun hasFakeContent(path: String): Boolean = fakeFileContent.containsKey(path)
+    fun hasFakeContent(path: String): Boolean = store.hasFakeContent(path)
 
     /**
      * Get fake content for a path.
      */
-    fun getFakeContent(path: String): ByteArray? = fakeFileContent[path]
+    fun getFakeContent(path: String): ByteArray? = store.fakeContent(path)
 
     /**
      * Get a system property override.
      */
-    fun getPropertyOverride(key: String): String? = propertyOverrides[key]
+    fun getPropertyOverride(key: String): String? = store.propertyOverride(key)
 
     /**
      * Get current redirection rules count.
      */
-    fun getRedirectionCount(): Int = pathRedirections.size
+    fun getRedirectionCount(): Int = store.count()
 
     /**
      * Get current hidden paths count.
      */
-    fun getHiddenPathCount(): Int = hiddenPaths.size
+    fun getHiddenPathCount(): Int = store.hiddenCount()
 
     /**
      * Check if native hooks are available.
@@ -882,10 +842,7 @@ class NativeHookBridge @Inject constructor() {
      * Clean up all hooks and state.
      */
     fun cleanup() {
-        pathRedirections.clear()
-        hiddenPaths.clear()
-        fakeFileContent.clear()
-        propertyOverrides.clear()
+        store.clearAll()
         spoofedPackageName = null
         spoofedPid = -1
 
@@ -1118,114 +1075,5 @@ class NativeHookBridge @Inject constructor() {
      */
     private fun tryLoadNativeLibrary(): Boolean {
         return nativeLibLoaded
-    }
-}
-
-/**
- * FileAccessInterceptor — Monitors and redirects file access at Java level.
- *
- * This works as a companion to NativeHookBridge for cases where
- * Java I/O classes are used directly by guest apps.
- */
-class FileAccessInterceptor(
-    private val bridge: NativeHookBridge
-) {
-
-    companion object {
-        private const val TAG = "FileIntercept"
-    }
-
-    /**
-     * Intercept a File constructor call and return a redirected File.
-     */
-    fun interceptFile(originalPath: String): File {
-        val translatedPath = bridge.translatePath(originalPath)
-        if (translatedPath != originalPath) {
-            Timber.tag(TAG).d("File redirect: $originalPath -> $translatedPath")
-        }
-        return File(translatedPath)
-    }
-
-    /**
-     * Intercept a FileInputStream and return one for the redirected path.
-     */
-    fun interceptFileInputStream(originalPath: String): FileInputStream {
-        val translatedPath = bridge.translatePath(originalPath)
-        if (translatedPath != originalPath) {
-            Timber.tag(TAG).d("FIS redirect: $originalPath -> $translatedPath")
-        }
-
-        // Check for fake content
-        val fakeContent = bridge.getFakeContent(originalPath)
-        if (fakeContent != null) {
-            // Create a temp file with fake content and return stream to it
-            val tempFile = File.createTempFile("nextvm_fake_", ".tmp")
-            tempFile.deleteOnExit()
-            tempFile.writeBytes(fakeContent)
-            return FileInputStream(tempFile)
-        }
-
-        return FileInputStream(translatedPath)
-    }
-
-    /**
-     * Intercept a FileOutputStream and return one for the redirected path.
-     */
-    fun interceptFileOutputStream(originalPath: String, append: Boolean = false): FileOutputStream {
-        val translatedPath = bridge.translatePath(originalPath)
-        if (translatedPath != originalPath) {
-            Timber.tag(TAG).d("FOS redirect: $originalPath -> $translatedPath")
-            // Ensure parent directory exists
-            File(translatedPath).parentFile?.mkdirs()
-        }
-        return FileOutputStream(translatedPath, append)
-    }
-
-    /**
-     * Intercept a File.exists() call.
-     */
-    fun interceptExists(path: String): Boolean {
-        if (bridge.isPathHidden(path)) {
-            return false
-        }
-        val translated = bridge.translatePath(path)
-        return File(translated).exists()
-    }
-
-    /**
-     * Intercept a File.canRead() call.
-     */
-    fun interceptCanRead(path: String): Boolean {
-        if (bridge.isPathHidden(path)) {
-            return false
-        }
-        val translated = bridge.translatePath(path)
-        return File(translated).canRead()
-    }
-
-    /**
-     * Intercept a File.listFiles() call.
-     */
-    fun interceptListFiles(path: String): Array<File>? {
-        val translated = bridge.translatePath(path)
-        val files = File(translated).listFiles() ?: return null
-
-        // Filter out hidden paths
-        return files.filter { file ->
-            !bridge.isPathHidden(file.absolutePath)
-        }.toTypedArray()
-    }
-
-    /**
-     * Read /proc/self/maps with NEXTVM entries filtered out.
-     */
-    fun readFilteredProcMaps(): String {
-        return try {
-            val content = File(NativeHookBridge.PROC_SELF_MAPS).readText()
-            bridge.filterProcMaps(content)
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to read /proc/self/maps")
-            ""
-        }
     }
 }
