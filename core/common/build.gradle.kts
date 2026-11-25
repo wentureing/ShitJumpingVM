@@ -12,6 +12,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    testOptions {
+        unitTests.all {
+            it.testLogging { showStandardStreams = true }
+            it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
+        }
+    }
 }
 
 dependencies {
@@ -20,4 +27,7 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
     implementation(libs.hiddenapibypass)
+
+    // 诊断抽象层的契约测试（纯 JVM）
+    testImplementation(libs.junit)
 }

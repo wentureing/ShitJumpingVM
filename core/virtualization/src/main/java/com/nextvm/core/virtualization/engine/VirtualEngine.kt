@@ -35,6 +35,9 @@ import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.nextvm.core.common.diagnostics.DiagnosticsHolder
+import com.nextvm.core.common.diagnostics.DiagnosticsRouter
+import com.nextvm.core.common.diagnostics.FileSink
 
 /**
  * VirtualEngine — The heart of NEXTVM.
@@ -225,6 +228,19 @@ class VirtualEngine @Inject constructor(
         Timber.tag(TAG).i("Initializing NEXTVM Virtual Engine (Phase 2+)...")
 
         try {
+            // ===== 诊断输出（sandboxsensor）=====
+            // checks.log 与 debug-trace.log 分开：前者是验证序列（golden 用），
+            // 只有 check/stage 两类记录，格式稳定可直接 diff。
+            runCatching {
+                DiagnosticsHolder.install(
+                    DiagnosticsRouter(
+                        listOf(FileSink(java.io.File(context.filesDir, "checks.log")))
+                    )
+                )
+            }.onFailure {
+                Timber.tag(TAG).w(it, "diagnostics install failed (non-fatal)")
+            }
+
             // Step 1: Bypass hidden API restrictions (MUST be first)
             if (!AndroidCompat.bypassHiddenApis()) {
                 Timber.tag(TAG).w("Hidden API bypass failed — some features may not work")

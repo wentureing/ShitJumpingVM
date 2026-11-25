@@ -23,6 +23,11 @@ class NextVmApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // ===== 标准行为记录（sandboxsensor）=====
+        // 用 Android 官方生命周期回调旁听启动编排顺序（零侵入，不改容器逻辑）。
+        // 必须早于任何 Activity 创建 —— 放在 super.onCreate() 之后立刻注册。
+        com.nextvm.core.virtualization.engine.LifecycleRecorder.install(this)
+
         // 1. Initialize logging
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
