@@ -6968,6 +6968,41 @@ static void java_io_ensure_real() {
  * EINTR 重试；path == null 抛 NullPointerException。
  */
 
+/*
+ * 抛 java.io.IOException —— AOSP 的 UnixFileSystem 里有两处会抛它：
+ *   canonicalize0          失败 -> JNU_ThrowIOExceptionWithLastError(env, "Bad pathname")
+ *   createFileExclusively0 非 EEXIST 失败 / close 失败 -> JNU_ThrowIOExceptionWithLastError
+ * 注意：这些方法**返回 boolean**，但 AOSP 在部分失败路径上**同时抛 IOException**。
+ */
+static void java_io_throw_ioexception(JNIEnv* env, const char* path, int err) {
+    jclass cls = find_class_via_forname(env, "java/io/IOException");
+    if (cls == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return;
+    }
+    const char* reason = (err != 0) ? strerror(err) : nullptr;
+    std::string msg;
+    if (path != nullptr) msg.append(path);
+    if (reason != nullptr) {
+        if (!msg.empty()) msg.append(": ");
+        msg.append(reason);
+    }
+    jmethodID ctor = env->GetMethodID(cls, "<init>", "(Ljava/lang/String;)V");
+    if (ctor != nullptr) {
+        jstring jmsg = env->NewStringUTF(msg.c_str());
+        jobject exc = env->NewObject(cls, ctor, jmsg);
+        if (jmsg != nullptr) env->DeleteLocalRef(jmsg);
+        if (exc != nullptr) {
+            env->Throw(static_cast<jthrowable>(exc));
+            env->DeleteLocalRef(exc);
+        }
+    } else if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(cls);
+}
+
+
 static void java_io_throw_npe(JNIEnv* env, const char* msg) {
     jclass npe = env->FindClass("java/lang/NullPointerException");
     if (npe != nullptr) {
@@ -7189,6 +7224,9 @@ static jboolean hooked_ufs_createFileExclusively0(JNIEnv* env, jclass, jstring j
     java_io_resolve(env, jpath, &real, &translated);
     if (real.empty()) return JNI_FALSE;
 
+    // AOSP: if (strcmp(path, "/")) —— 根目录直接跳过，不尝试创建
+    if (real == "/") return JNI_FALSE;
+
     g_java_io_fs_total.fetch_add(1);
     if (translated) g_java_io_fs_translated.fetch_add(1);
 
@@ -7201,9 +7239,21 @@ static jboolean hooked_ufs_createFileExclusively0(JNIEnv* env, jclass, jstring j
         int err = errno;
         g_java_io_fs_fail.fetch_add(1);
         java_io_record("createFileExclusively0", real.c_str(), err, 0);
+        // AOSP: if (errno != EEXIST) JNU_ThrowIOExceptionWithLastError
+        // 即 EEXIST 静默返回 false，其余失败要抛 IOException
+        if (err != EEXIST) {
+            java_io_throw_ioexception(env, real.c_str(), err);
+        }
         return JNI_FALSE;
     }
-    ::close(fd);
+    // AOSP: if (close(fd) == -1) JNU_ThrowIOExceptionWithLastError
+    if (::close(fd) == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("createFileExclusively0", real.c_str(), err, 0);
+        java_io_throw_ioexception(env, real.c_str(), err);
+        return JNI_FALSE;
+    }
     if (translated) java_io_record("createFileExclusively0", real.c_str(), 0, 0);
     return JNI_TRUE;
 }
