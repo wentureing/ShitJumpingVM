@@ -85,8 +85,24 @@ class SandboxManager @Inject constructor(
         java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private fun ensureDir(file: File): File {
-        if (ensuredDirs.add(file.absolutePath)) {
-            file.mkdirs()
+        val path = file.absolutePath
+        // 修复（sandboxsensor，移植自 fork v144）：旧实现是
+        //   if (ensuredDirs.add(path)) file.mkdirs()
+        // 先登记再创建、且丢弃 mkdirs 的返回值 -> 一旦首次创建失败
+        // （启动早期父目录链未就绪），该路径被永久记忆为"已确保"，之后永不重试
+        // -> guest 拿到"登记为已创建但实际不存在"的目录
+        // （Via 的 fontDirectory 崩溃、以及 UI 起不来就是这个原因）。
+        if (ensuredDirs.contains(path) && file.isDirectory) {
+            return file
+        }
+        val created = file.mkdirs()
+        val ok = created || file.isDirectory
+        if (ok) {
+            ensuredDirs.add(path)
+        } else {
+            ensuredDirs.remove(path)
+            // 失败始终写日志：这是排查的第一线索
+            Timber.tag(TAG).e("ensureDir mkdirs FAILED path=%s", path)
         }
         return file
     }
