@@ -135,4 +135,29 @@ class PathWhitelistEffectTest {
         // 每个族都有合成形态可被翻译（族根缺口由 T39/T41 另案跟进）
         assertTrue(PathKinds.synthetic(PathKind.FILES, exempt).startsWith("/data/user/0/$exempt"))
     }
+
+    // ---------------- W8：内容判据 vs 元数据判据 ----------------
+
+    /**
+     * W8：两类判据必须分开 —— 这是 VirtualContext 4 处判断收敛后的唯一入口。
+     *
+     * - 内容目录（files/cache/databases/app_dir/external/obb/media）：受 `contentPathsUseReal` 影响
+     * - 元数据（getDataDir / ApplicationInfo 字段）：**不受影响**（反双开检测最常看这里）
+     */
+    @Test
+    fun `W8 内容与元数据判据分离`() {
+        // 内容目录：开关一开就强制真路径
+        assertTrue("白名单 + 未强制真 → 合成", shouldUseSyntheticContent(true, false))
+        assertFalse("强制真 → 不合成", shouldUseSyntheticContent(true, true))
+        assertFalse("非白名单 → 不合成", shouldUseSyntheticContent(false, false))
+
+        // 元数据：没有 contentPathsUseReal 参数 = 不受影响
+        assertTrue("白名单 → 元数据合成", shouldUseSyntheticMetadata(true))
+        assertTrue("detached 探针 → 元数据合成", shouldUseSyntheticMetadata(false, detachedAppInfo = true))
+        assertFalse("非白名单且非探针 → 元数据真", shouldUseSyntheticMetadata(false, detachedAppInfo = false))
+        // 豁免 guest（via）：两条判据都应为假，与 isPathFidelityGuest 一致
+        val exemptFidelity = VirtualConstants.isPathFidelityGuest(exempt)
+        assertFalse(shouldUseSyntheticContent(exemptFidelity, false))
+        assertFalse(shouldUseSyntheticMetadata(exemptFidelity))
+    }
 }
