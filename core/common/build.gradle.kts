@@ -16,6 +16,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    testOptions {
+        unitTests.all {
+            // 让测试的 println 出现在 CI 日志里（诊断序列模板要人看）
+            it.testLogging { showStandardStreams = true }
+            // 失败时打完整栈（默认会吞）
+            it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
+        }
+    }
 }
 
 dependencies {

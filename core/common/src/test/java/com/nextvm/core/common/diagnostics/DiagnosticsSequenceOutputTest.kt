@@ -92,6 +92,11 @@ class DiagnosticsSequenceOutputTest {
 
         val dump = sink.dump()
         // CI 日志里直接可见
+        // 同时落盘，供 CI 作为 artifact 上传（不依赖 Gradle 的日志配置）
+        runCatching {
+            val out = java.io.File("build/diagnostics").apply { mkdirs() }
+            java.io.File(out, "checks-template.txt").writeText(dump)
+        }
         println("===== DIAGNOSTICS SEQUENCE (template) =====")
         println(dump)
         println("===== END =====")
