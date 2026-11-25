@@ -36,6 +36,10 @@ object GuestBreadcrumb {
     @Volatile private var t0 = 0L
     @Volatile private var file: File? = null
 
+    /** 镜像到 checks.log 的条数上限（单进程） */
+    private const val CRUMB_TO_DIAG_MAX = 200
+    private var crumbToDiagCount = 0
+
     private val lock = Any()
     private val buffer = ArrayList<String>()
 
@@ -111,6 +115,16 @@ object GuestBreadcrumb {
                     } catch (_: Throwable) {
                     }
                 }
+            }
+
+            // 镜像到诊断层（可 diff 的 checks.log）；限流避免刷屏
+            if (crumbToDiagCount < CRUMB_TO_DIAG_MAX &&
+                com.nextvm.core.common.DebugFlags.isOn(
+                    com.nextvm.core.common.DebugFlags.CRUMB_TO_DIAG, true
+                )
+            ) {
+                crumbToDiagCount++
+                com.nextvm.core.common.diagnostics.DiagnosticsHolder.stage("crumb", line)
             }
         } catch (_: Throwable) {
         }

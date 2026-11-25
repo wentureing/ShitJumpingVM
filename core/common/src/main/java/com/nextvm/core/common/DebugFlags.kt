@@ -53,6 +53,12 @@ object DebugFlags {
     /** guest 进程是否注册路径重定向规则（v142 引入，默认 true）。 */
     const val GUEST_REDIRECT = "guestRedirect"
 
+    /**
+     * 把 GuestBreadcrumb 的既有埋点镜像到诊断层（checks.log）。
+     * 默认开：用户明确要求启用；单进程限流 200 条，避免刷屏。
+     */
+    const val CRUMB_TO_DIAG = "crumbToDiag"
+
     /** WebView dataDir 假值（白名单 guest，默认 true）。 */
     const val WEBVIEW_DATA_DIR_FAKE = "webviewDataDirFake"
 

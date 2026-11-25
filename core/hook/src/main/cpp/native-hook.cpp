@@ -6664,6 +6664,11 @@ static std::atomic<int> g_java_io_open_total{0};
 static std::atomic<int> g_java_io_open_fail{0};
 static std::atomic<int> g_java_io_translated{0};
 
+/* Java 层文件系统（mkdir/unlink/rename/opendir）统计 */
+static std::atomic<int> g_java_io_fs_total{0};
+static std::atomic<int> g_java_io_fs_translated{0};
+static std::atomic<int> g_java_io_fs_fail{0};
+
 // ==================== v148：与 AOSP 语义等价所需的缓存引用 ====================
 // 旧实现每次 open 都 FindClass + GetMethodID，且失败时抛 FileNotFoundException
 // （AOSP 抛 ErrnoException）—— 这会让 catch(ErrnoException) 的调用者走错分支，
@@ -6875,6 +6880,116 @@ static jboolean hooked_java_linux_access(JNIEnv* env, jclass, jstring path, jint
     return JNI_TRUE;
 }
 
+/*
+ * ===== Java 层文件系统写/列举的唯一覆盖点 =====
+ *
+ * 为什么必须在这里：native GOT patch 只作用于应用自己的 .so；
+ * File.mkdirs()/listFiles()/renameTo()/delete() 走 libjavacore.so -> libc，
+ * 属于系统库，被 NS_HOOK_SYSTEM_LIBS=0 排除。
+ *
+ * 语义严格对齐 AOSP（v147 在异常类型上翻车，导致 Via 不可交互）：
+ *   mkdir(String,int) -> void      失败抛 ErrnoException
+ *   unlink(String)    -> void      失败抛 ErrnoException
+ *   rename(String,String) -> void  失败抛 ErrnoException
+ *   opendir(String)   -> long(DIR*) 失败抛 ErrnoException
+ * EINTR 重试；path == null 抛 NullPointerException。
+ */
+
+static void java_io_throw_npe(JNIEnv* env, const char* msg) {
+    jclass npe = env->FindClass("java/lang/NullPointerException");
+    if (npe != nullptr) {
+        env->ThrowNew(npe, msg);
+        env->DeleteLocalRef(npe);
+    }
+}
+
+static void hooked_java_linux_mkdir(JNIEnv* env, jclass, jstring path, jint mode) {
+    if (path == nullptr) { java_io_throw_npe(env, "path == null"); return; }
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, path, &real, &translated);
+    if (real.empty()) return;
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+    int r;
+    do {
+        r = (real_mkdir != nullptr) ? real_mkdir(real.c_str(), static_cast<mode_t>(mode))
+                                    : ::mkdir(real.c_str(), static_cast<mode_t>(mode));
+    } while (r == -1 && errno == EINTR);
+    if (r == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("mkdir", real.c_str(), err, mode);
+        java_io_throw_errno(env, "mkdir", err, real.c_str());
+    }
+}
+
+static void hooked_java_linux_unlink(JNIEnv* env, jclass, jstring path) {
+    if (path == nullptr) { java_io_throw_npe(env, "pathname == null"); return; }
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, path, &real, &translated);
+    if (real.empty()) return;
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+    int r;
+    do {
+        r = (real_unlink != nullptr) ? real_unlink(real.c_str()) : ::unlink(real.c_str());
+    } while (r == -1 && errno == EINTR);
+    if (r == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("unlink", real.c_str(), err, 0);
+        java_io_throw_errno(env, "unlink", err, real.c_str());
+    }
+}
+
+static void hooked_java_linux_rename(JNIEnv* env, jclass, jstring oldPath, jstring newPath) {
+    if (oldPath == nullptr || newPath == nullptr) {
+        java_io_throw_npe(env, "oldPath/newPath == null");
+        return;
+    }
+    std::string realOld, realNew;
+    bool tOld = false, tNew = false;
+    java_io_resolve(env, oldPath, &realOld, &tOld);
+    java_io_resolve(env, newPath, &realNew, &tNew);
+    if (realOld.empty() || realNew.empty()) return;
+    g_java_io_fs_total.fetch_add(1);
+    if (tOld || tNew) g_java_io_fs_translated.fetch_add(1);
+    int r;
+    do {
+        r = (real_rename != nullptr) ? real_rename(realOld.c_str(), realNew.c_str())
+                                     : ::rename(realOld.c_str(), realNew.c_str());
+    } while (r == -1 && errno == EINTR);
+    if (r == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("rename", realOld.c_str(), err, 0);
+        java_io_throw_errno(env, "rename", err, realOld.c_str());
+    }
+}
+
+static jlong hooked_java_linux_opendir(JNIEnv* env, jclass, jstring path) {
+    if (path == nullptr) { java_io_throw_npe(env, "path == null"); return 0; }
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, path, &real, &translated);
+    if (real.empty()) return 0;
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+    DIR* d = (real_opendir != nullptr) ? real_opendir(real.c_str()) : ::opendir(real.c_str());
+    if (d == nullptr) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("opendir", real.c_str(), err, 0);
+        java_io_throw_errno(env, "opendir", err, real.c_str());
+        return 0;
+    }
+    if (translated) java_io_record("opendir", real.c_str(), 0, 0);
+    return static_cast<jlong>(reinterpret_cast<uintptr_t>(d));
+}
+
+
 static bool install_java_io_hooks(JNIEnv* env, bool translate) {
     g_java_io_translate.store(translate);
 
@@ -6892,9 +7007,23 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
         {const_cast<char*>("access"),
          const_cast<char*>("(Ljava/lang/String;I)Z"),
          reinterpret_cast<void*>(hooked_java_linux_access)},
+        // Java 层文件系统写/列举（系统库不在 GOT patch 范围，只能在这里拦）
+        {const_cast<char*>("mkdir"),
+         const_cast<char*>("(Ljava/lang/String;I)V"),
+         reinterpret_cast<void*>(hooked_java_linux_mkdir)},
+        {const_cast<char*>("unlink"),
+         const_cast<char*>("(Ljava/lang/String;)V"),
+         reinterpret_cast<void*>(hooked_java_linux_unlink)},
+        {const_cast<char*>("rename"),
+         const_cast<char*>("(Ljava/lang/String;Ljava/lang/String;)V"),
+         reinterpret_cast<void*>(hooked_java_linux_rename)},
+        {const_cast<char*>("opendir"),
+         const_cast<char*>("(Ljava/lang/String;)J"),
+         reinterpret_cast<void*>(hooked_java_linux_opendir)},
     };
 
-    jint r = env->RegisterNatives(cls, methods, 2);
+    const int kMethodCount = static_cast<int>(sizeof(methods) / sizeof(methods[0]));
+    jint r = env->RegisterNatives(cls, methods, kMethodCount);
     env->DeleteLocalRef(cls);
     if (r != JNI_OK) {
         LOGE("installJavaIoHooks: RegisterNatives failed code=%d", r);
