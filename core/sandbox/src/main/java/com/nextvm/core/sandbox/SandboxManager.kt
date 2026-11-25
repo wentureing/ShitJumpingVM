@@ -1,5 +1,6 @@
 package com.nextvm.core.sandbox
 
+import com.nextvm.core.common.DebugTrace
 import android.content.Context
 import com.nextvm.core.model.VirtualConstants
 import timber.log.Timber
@@ -341,7 +342,9 @@ class SandboxManager @Inject constructor(
      *       └── media/{pkg}/
      */
     fun getExternalStorageDir(instanceId: String): File {
-        return ensureDir(File(getAppDir(instanceId), "sdcard"))
+        val dir = ensureDir(File(getAppDir(instanceId), "sdcard"))
+        DebugTrace.detail("sandbox", "getExternalStorageDir -> ${dir.absolutePath}")
+        return dir
     }
 
     /**
@@ -360,6 +363,7 @@ class SandboxManager @Inject constructor(
      */
     fun getExternalAppFilesDir(instanceId: String, packageName: String, type: String?): File {
         val base = ensureDir(File(getExternalStorageDir(instanceId), "Android/data/$packageName/files"))
+        DebugTrace.detail("sandbox", "getExternalAppFilesDir(pkg=$packageName, type=$type) -> ${base.absolutePath}")
         return if (type != null) ensureDir(File(base, type)) else base
     }
 
@@ -368,7 +372,9 @@ class SandboxManager @Inject constructor(
      * Equivalent to /storage/emulated/0/Android/data/{pkg}/cache
      */
     fun getExternalAppCacheDir(instanceId: String, packageName: String): File {
-        return ensureDir(File(getExternalStorageDir(instanceId), "Android/data/$packageName/cache"))
+        val dir = ensureDir(File(getExternalStorageDir(instanceId), "Android/data/$packageName/cache"))
+        DebugTrace.detail("sandbox", "getExternalAppCacheDir(pkg=$packageName) -> ${dir.absolutePath}")
+        return dir
     }
 
     /**
@@ -376,7 +382,9 @@ class SandboxManager @Inject constructor(
      * Equivalent to /storage/emulated/0/Android/media/{pkg}
      */
     fun getExternalMediaDir(instanceId: String, packageName: String): File {
-        return ensureDir(File(getExternalStorageDir(instanceId), "Android/media/$packageName"))
+        val dir = ensureDir(File(getExternalStorageDir(instanceId), "Android/media/$packageName"))
+        DebugTrace.detail("sandbox", "getExternalMediaDir(pkg=$packageName) -> ${dir.absolutePath}")
+        return dir
     }
 
     /**
@@ -384,7 +392,9 @@ class SandboxManager @Inject constructor(
      * Equivalent to /storage/emulated/0/Android/obb/{pkg}
      */
     fun getExternalObbDir(instanceId: String, packageName: String): File {
-        return ensureDir(File(getExternalStorageDir(instanceId), "Android/obb/$packageName"))
+        val dir = ensureDir(File(getExternalStorageDir(instanceId), "Android/obb/$packageName"))
+        DebugTrace.detail("sandbox", "getExternalObbDir(pkg=$packageName) -> ${dir.absolutePath}")
+        return dir
     }
 
     /**

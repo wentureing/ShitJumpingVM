@@ -34,6 +34,10 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     testOptions {
+        // android.util.Log / SystemProperties 等是 android.jar 里的 stub，
+        // 不设这个开关，纯 JVM 单测碰到它们会抛 "Stub!"。
+        // translatePath 现在会在 debug 下写 DebugTrace（内部走 Log），必须打开。
+        unitTests.isReturnDefaultValues = true
         unitTests.all {
             it.testLogging { showStandardStreams = true }
             it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }

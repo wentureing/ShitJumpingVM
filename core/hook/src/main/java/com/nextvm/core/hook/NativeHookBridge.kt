@@ -1,5 +1,7 @@
 package com.nextvm.core.hook
 
+import com.nextvm.core.common.DebugFlags
+import com.nextvm.core.common.DebugTrace
 import android.content.Context
 import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.findField
@@ -374,6 +376,7 @@ class NativeHookBridge @Inject constructor() {
         if (nativeHooksAvailable) {
             nativeAddPathRedirection(fromPrefix, toPrefix)
         }
+        DebugTrace.detail("path", "rule + $fromPrefix => $toPrefix")
     }
 
     /**
@@ -476,6 +479,9 @@ class NativeHookBridge @Inject constructor() {
         // 注意：这里不能 dumpFsStats —— 此刻 DiagnosticsHolder 还没 install
         //       （实测 71ms 注册规则 / 78ms 才装 Holder）。
         //       改由 VirtualApplicationManager.registerBreadcrumbCallbacks 在装完之后调。
+
+        // debug 下把全部规则打到日志：一眼就能看出「目标目录对不对」
+        dumpPathRedirections()
     }
 
     /**
@@ -536,6 +542,8 @@ class NativeHookBridge @Inject constructor() {
         addPathRedirection("/sdcard", virtualSdcardDir)
 
         Timber.tag(TAG).d("External storage redirections set for $instanceId -> $virtualSdcardDir")
+
+        dumpPathRedirections()
     }
 
     /**
@@ -736,6 +744,12 @@ class NativeHookBridge @Inject constructor() {
         fakeFileContent[path] = content.toByteArray()
     }
 
+    /** 路径翻译日志的限流计数（高频路径不能刷屏）。 */
+    private val pathLogCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 每次进程启动最多记录多少条路径翻译。 */
+    private val PATH_LOG_LIMIT = 200
+
     /**
      * Translate a file path through redirection rules.
      * Public API for other components to use.
@@ -757,19 +771,50 @@ class NativeHookBridge @Inject constructor() {
         }
 
         if (bestMatch.isNotEmpty()) {
-        // 只替换前缀，不能对整条路径做 String.replace ——
-        // 那会把路径中间出现的同样子串一起改掉（/a/x/a/y -> /sandbox/x/sandbox/y）。
-        val rest = originalPath.substring(bestMatch.length)
-        return when {
-            rest.isEmpty() -> bestRedirect
-            bestRedirect.endsWith("/") && rest.startsWith("/") -> bestRedirect + rest.substring(1)
-            bestRedirect.endsWith("/") -> bestRedirect + rest
-            rest.startsWith("/") -> bestRedirect + rest
-            else -> "$bestRedirect/$rest"
-        }
+            val rest = originalPath.substring(bestMatch.length)
+            val redirect = when {
+                rest.isEmpty() -> bestRedirect
+                bestRedirect.endsWith("/") && rest.startsWith("/") -> bestRedirect + rest.substring(1)
+                bestRedirect.endsWith("/") -> bestRedirect + rest
+                rest.startsWith("/") -> bestRedirect + rest
+                else -> "$bestRedirect/$rest"
+            }
+            logPathTranslation(originalPath, redirect, bestMatch)
+            return redirect
         }
 
+        logPathTranslation(originalPath, originalPath, null)
         return originalPath
+    }
+
+    /**
+     * 记录一次路径翻译（debug 下），限流 [PATH_LOG_LIMIT] 条。
+     *
+     * 为什么需要：路径翻译错误的表现与「目录真的空」完全一致 —— 返回合法的空数组，
+     * 没有异常、没有崩溃。不给它一个声音就永远查不出来。
+     */
+    private fun logPathTranslation(source: String, target: String, matched: String?) {
+        val n = pathLogCount.incrementAndGet()
+        if (n > PATH_LOG_LIMIT) return
+        if (matched == null) {
+            DebugTrace.detail("path", "$source -> (no rule)")
+        } else {
+            DebugTrace.detail("path", "$source -> $target  [$matched]")
+        }
+    }
+
+    /**
+     * debug 下把当前全部规则打到日志。
+     *
+     * 为什么需要：一眼就能看出「external_data 这个目标是不是我想要的那个」，
+     * 而不必等到应用看不见文件再回来逐条推算。
+     */
+    fun dumpPathRedirections(tag: String = "path") {
+        if (!DebugFlags.isDebugBuild()) return
+        DebugTrace.event(tag, "path rules=${pathRedirections.size}")
+        pathRedirections.entries.sortedBy { it.key }.forEach { (from, to) ->
+            DebugTrace.detail(tag, "  $from  =>  $to")
+        }
     }
 
     /**
