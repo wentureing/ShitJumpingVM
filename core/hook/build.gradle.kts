@@ -32,6 +32,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    testOptions {
+        unitTests.all {
+            it.testLogging { showStandardStreams = true }
+            it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
+        }
+    }
 }
 
 dependencies {
@@ -44,4 +51,7 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
+
+    // 路径规则的纯 JVM 测试（translatePath / setupAppRedirections 不碰 JNI）
+    testImplementation(libs.junit)
 }
