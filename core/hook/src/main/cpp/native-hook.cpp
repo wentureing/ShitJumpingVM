@@ -7143,6 +7143,121 @@ static jstring ufs_get_path(JNIEnv* env, jobject file) {
 }
 
 /* File.listFiles() 的底层：列目录，返回文件名数组（不含路径） */
+/*
+ * 构造 android.system.StructStat —— AOSP 用 13 参数版本：
+ *   (JJIJIIJJLStructTimespec;LStructTimespec;LStructTimespec;JJ)V
+ *   顺序：st_dev st_ino st_mode st_nlink st_uid st_gid st_rdev st_size
+ *        atim mtim ctim st_blksize st_blocks
+ *
+ * 为什么必须有：File.length() -> UnixFileSystem.getLength -> Libcore.os.stat
+ * 这条链在 Java 层只有 Linux.stat 一个 native 入口。不 hook 它，
+ * stat 会落到宿主文件系统（沙箱里没有该文件）-> st_size = 0
+ * -> 应用按「长度必须大于 0」过滤 -> 文件明明在，列表却是空的。
+ */
+static jobject java_io_make_struct_stat(JNIEnv* env, const struct stat& st) {
+    jclass statCls = find_class_via_forname(env, "android/system/StructStat");
+    if (statCls == nullptr) return nullptr;
+    jmethodID statCtor = env->GetMethodID(
+        statCls, "<init>",
+        "(JJIJIIJJLandroid/system/StructTimespec;Landroid/system/StructTimespec;"
+        "Landroid/system/StructTimespec;JJ)V");
+    if (statCtor == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(statCls);
+        return nullptr;
+    }
+
+    jclass tsCls = find_class_via_forname(env, "android/system/StructTimespec");
+    jmethodID tsCtor = (tsCls != nullptr) ? env->GetMethodID(tsCls, "<init>", "(JJ)V") : nullptr;
+    if (tsCtor == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+
+    jobject atim = nullptr, mtim = nullptr, ctim = nullptr;
+    if (tsCls != nullptr && tsCtor != nullptr) {
+        atim = env->NewObject(tsCls, tsCtor,
+                              static_cast<jlong>(st.st_atim.tv_sec),
+                              static_cast<jlong>(st.st_atim.tv_nsec));
+        mtim = env->NewObject(tsCls, tsCtor,
+                              static_cast<jlong>(st.st_mtim.tv_sec),
+                              static_cast<jlong>(st.st_mtim.tv_nsec));
+        ctim = env->NewObject(tsCls, tsCtor,
+                              static_cast<jlong>(st.st_ctim.tv_sec),
+                              static_cast<jlong>(st.st_ctim.tv_nsec));
+    }
+
+    jobject out = env->NewObject(
+        statCls, statCtor,
+        static_cast<jlong>(st.st_dev), static_cast<jlong>(st.st_ino),
+        static_cast<jint>(st.st_mode), static_cast<jlong>(st.st_nlink),
+        static_cast<jint>(st.st_uid), static_cast<jint>(st.st_gid),
+        static_cast<jlong>(st.st_rdev), static_cast<jlong>(st.st_size),
+        atim, mtim, ctim,
+        static_cast<jlong>(st.st_blksize), static_cast<jlong>(st.st_blocks));
+
+    if (atim != nullptr) env->DeleteLocalRef(atim);
+    if (mtim != nullptr) env->DeleteLocalRef(mtim);
+    if (ctim != nullptr) env->DeleteLocalRef(ctim);
+    if (tsCls != nullptr) env->DeleteLocalRef(tsCls);
+    env->DeleteLocalRef(statCls);
+    return out;
+}
+
+/* Libcore.os.stat / lstat 的统一实现；followSymlink 区分两者。 */
+static jobject java_io_stat_impl(JNIEnv* env, jstring jpath, int mode) {
+    if (jpath == nullptr) {
+        java_io_throw_npe(env, "path == null");
+        return nullptr;
+    }
+    std::string real;
+    bool translated = false;
+    java_io_resolve(env, jpath, &real, &translated);
+    if (real.empty()) {
+        java_io_throw_errno(env, "stat", EINVAL, "");
+        return nullptr;
+    }
+
+    g_java_io_fs_total.fetch_add(1);
+    if (translated) g_java_io_fs_translated.fetch_add(1);
+
+    struct stat st;
+    int r;
+    do {
+        if (mode == 0 && real_lstat != nullptr) {
+            r = real_lstat(real.c_str(), &st);
+        } else if (real_stat != nullptr) {
+            r = real_stat(real.c_str(), &st);
+        } else {
+            r = ::stat(real.c_str(), &st);
+        }
+    } while (r == -1 && errno == EINTR);
+
+    if (r == -1) {
+        int err = errno;
+        g_java_io_fs_fail.fetch_add(1);
+        java_io_record("stat", real.c_str(), err, 0);
+        java_io_throw_errno(env, "stat", err, real.c_str());
+        return nullptr;
+    }
+
+    jobject obj = java_io_make_struct_stat(env, st);
+    if (obj != nullptr) {
+        LOGI("ufs-alias stat%s: %s -> size=%lld mode=0%o", translated ? " [xlat]" : "",
+             real.c_str(), static_cast<long long>(st.st_size),
+             static_cast<unsigned>(st.st_mode & 07777));
+    } else {
+        LOGE("stat: makeStructStat failed for %s", real.c_str());
+    }
+    return obj;
+}
+
+static jobject hooked_java_linux_stat(JNIEnv* env, jclass, jstring jpath) {
+    return java_io_stat_impl(env, jpath, 1);   // 跟随符号链接
+}
+
+static jobject hooked_java_linux_lstat(JNIEnv* env, jclass, jstring jpath) {
+    return java_io_stat_impl(env, jpath, 0);   // 不跟随
+}
+
+
 static jobjectArray hooked_ufs_list0(JNIEnv* env, jclass, jobject file) {
     jstring jpath = ufs_get_path(env, file);
     if (jpath == nullptr) return nullptr;
@@ -7446,6 +7561,12 @@ static bool install_java_io_hooks(JNIEnv* env, bool translate) {
         {const_cast<char*>("rename"),
          const_cast<char*>("(Ljava/lang/String;Ljava/lang/String;)V"),
          reinterpret_cast<void*>(hooked_java_linux_rename)},
+        {const_cast<char*>("stat"),
+         const_cast<char*>("(Ljava/lang/String;)Landroid/system/StructStat;"),
+         reinterpret_cast<void*>(hooked_java_linux_stat)},
+        {const_cast<char*>("lstat"),
+         const_cast<char*>("(Ljava/lang/String;)Landroid/system/StructStat;"),
+         reinterpret_cast<void*>(hooked_java_linux_lstat)},
     };
 
     // 逐个注册：批量 RegisterNatives 是全或无，失败时无法定位是哪个方法/什么异常。
