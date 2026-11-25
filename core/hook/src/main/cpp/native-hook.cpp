@@ -225,27 +225,46 @@ static bool is_path_hidden(const char* path) {
 /**
  * Check if a path needs redirection and return the redirected path.
  * Returns empty string if no redirection needed.
+ *
+ * 规则是前缀；以 '/' 结尾的规则还"拥有自己的根形态"（去掉尾斜杠的那个字符串）。
+ * 有效长度最长者胜，平局时真正的前缀优先。
+ * 必须与 Java 侧 NativeHookBridge.translatePath 的语义完全一致。
  */
+static std::string trim_trailing_slashes(const std::string& s) {
+    std::string out = s;
+    while (!out.empty() && out.back() == '/') out.pop_back();
+    return out;
+}
+
 static std::string redirect_path(const char* path) {
     if (path == nullptr || path[0] == '\0') return "";
     if (g_path_redirects.empty()) return "";
 
     std::string path_str(path);
 
-    // Check each registered redirect prefix (longest match wins)
     std::string best_from;
     std::string best_to;
+    size_t best_len = 0;
+    bool best_is_root = false;
     for (const auto& redirect : g_path_redirects) {
-        if (path_str.compare(0, redirect.first.length(), redirect.first) == 0) {
-            if (redirect.first.length() > best_from.length()) {
-                best_from = redirect.first;
-                best_to = redirect.second;
-            }
-        }
+        const std::string& from = redirect.first;
+        const bool is_prefix =
+            path_str.size() >= from.size() && path_str.compare(0, from.size(), from) == 0;
+        const bool is_root = !is_prefix && from.size() == path_str.size() + 1 &&
+                             !from.empty() && from.back() == '/' &&
+                             from.compare(0, path_str.size(), path_str) == 0;
+        if (!is_prefix && !is_root) continue;
+        const size_t len = is_root ? path_str.size() : from.size();
+        if (!(len > best_len || (len == best_len && best_is_root && !is_root))) continue;
+        best_len = len;
+        best_from = is_prefix ? from : path_str;
+        best_to = is_root ? trim_trailing_slashes(redirect.second) : redirect.second;
+        best_is_root = is_root;
     }
 
     if (!best_from.empty()) {
-        return best_to + path_str.substr(best_from.length());
+        if (best_is_root) return best_to;
+        return best_to + path_str.substr(best_from.size());
     }
 
     // Special case: /data/user/0/ is the same as /data/data/

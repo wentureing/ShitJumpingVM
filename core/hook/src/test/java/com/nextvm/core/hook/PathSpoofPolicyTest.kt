@@ -105,22 +105,25 @@ class PathSpoofPolicyTest {
 
     /**
      * H5：**豁免优先级最高** —— `isPathFidelityGuest` 直接返回 false，
-     * 即使该包同时在 PATH_FIDELITY_WHITELIST 里。
+     * 即使该包同时出现在「欺骗名单」里。
+     *
+     * 2026-11-25 调整对照包：via 已从内置白名单移入「豁免名单」（名单改为配置驱动），
+     * 不再是"同时在两份名单"的样本；改用 CM_PACKAGE（默认在欺骗名单）运行时加入豁免。
      */
     @Test
-    fun `H5 豁免优先于白名单`() {
-        // 先确认 mark.via 原本在白名单（否则本测试没有对照意义）
-        assertTrue(PathSpoofConfig.isGuestExempt(defaultExempt))
+    fun `H5 豁免优先于欺骗名单`() {
+        val pkg = VirtualConstants.CM_PACKAGE
+        // 前提：该包默认在欺骗名单（有对照意义）
+        assertTrue("前提：$pkg 应在欺骗名单", PathSpoofConfig.isSpoofListed(pkg))
+        assertTrue(VirtualConstants.isPathFidelityGuest(pkg))
 
-        // 豁免生效 -> isPathFidelityGuest 必须是 false
-        assertFalse(
-            "豁免应压过白名单",
-            VirtualConstants.isPathFidelityGuest(defaultExempt)
-        )
+        // 加入豁免 -> 立即停止合成
+        assertTrue(PathSpoofConfig.setGuestExempt(pkg, true))
+        assertFalse("豁免应压过欺骗名单", VirtualConstants.isPathFidelityGuest(pkg))
 
-        // 移除豁免 -> 回到白名单行为（true）
-        PathSpoofConfig.setGuestExempt(defaultExempt, false)
-        assertTrue(VirtualConstants.isPathFidelityGuest(defaultExempt))
+        // 移除豁免 -> 回到欺骗名单行为（true）
+        PathSpoofConfig.setGuestExempt(pkg, false)
+        assertTrue(VirtualConstants.isPathFidelityGuest(pkg))
     }
 
     /**

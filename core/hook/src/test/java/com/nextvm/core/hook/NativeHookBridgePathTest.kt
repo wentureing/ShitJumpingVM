@@ -653,4 +653,43 @@ class NativeHookBridgePathTest {
             assertTrue("目标不在沙箱内: $t", t.startsWith(sandbox))
         }
     }
+
+    /**
+     * T42：**族根形态不得吃掉兄弟包**。
+     *
+     * 规则是 `/data/user/0/<pkg>/`，族根是它去掉尾斜杠的形式。长度必须**恰好**是
+     * `from.length - 1`，否则 `mark.via.pro` 会被当成 `mark.via` 的子路径。
+     */
+    @Test
+    fun `T42 族根不吃兄弟包`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        assertEquals("族根应被翻译", sandbox, bridge.translatePath("/data/user/0/$guest"))
+        assertEquals("族根应被翻译", sandbox, bridge.translatePath("/data/data/$guest"))
+        assertEquals(
+            "兄弟包不得被翻译",
+            "/data/user/0/$guest.pro",
+            bridge.translatePath("/data/user/0/$guest.pro"),
+        )
+        assertEquals(
+            "兄弟包的子路径不得被翻译",
+            "/data/data/$guest.pro/a",
+            bridge.translatePath("/data/data/$guest.pro/a"),
+        )
+    }
+
+    /**
+     * T43：**族根与子项父子一致**。
+     *
+     * 真机上 `getFilesDir().getParentFile() == getDataDir()` 永远成立；容器里必须也成立，
+     * 否则应用做路径拼接/校验时会发现矛盾。
+     */
+    @Test
+    fun `T43 族根与子项父子一致`() {
+        bridge.setupAppRedirections(guest, "i1", sandbox)
+        val root = bridge.translatePath("/data/user/0/$guest")
+        val child = bridge.translatePath("/data/user/0/$guest/files")
+        assertEquals("父子必须自洽", "$root/files", child)
+        // 带尾斜杠的输入仍保留目标原有尾斜杠（T9 的既有行为不被族根改变）
+        assertEquals("$sandbox/", bridge.translatePath("/data/user/0/$guest/"))
+    }
 }

@@ -769,14 +769,23 @@ class NativeHookBridge @Inject constructor() {
             return "/dev/null" // Will fail to open properly
         }
 
-        // Apply redirection rules (longest prefix match)
+        // 规则是前缀；以 '/' 结尾的规则还"拥有自己的根形态"（去掉尾斜杠的那个字符串）。
+        // 有效长度最长者胜，平局时真正的前缀优先；语义见 docs/输出/变更/20261125-族根匹配语义.md
         var bestMatch = ""
         var bestRedirect = ""
+        var bestLen = 0
+        var bestIsRoot = false
         for ((from, to) in pathRedirections) {
-            if (originalPath.startsWith(from) && from.length > bestMatch.length) {
-                bestMatch = from
-                bestRedirect = to
-            }
+            val isPrefix = originalPath.startsWith(from)
+            val isRoot = !isPrefix && from.endsWith("/") &&
+                from.length == originalPath.length + 1 && from.startsWith(originalPath)
+            if (!isPrefix && !isRoot) continue
+            val effectiveLen = if (isRoot) originalPath.length else from.length
+            if (!(effectiveLen > bestLen || (effectiveLen == bestLen && bestIsRoot && !isRoot))) continue
+            bestLen = effectiveLen
+            bestMatch = if (isRoot) originalPath else from
+            bestRedirect = if (isRoot) to.trimEnd('/') else to
+            bestIsRoot = isRoot
         }
 
         if (bestMatch.isNotEmpty()) {
