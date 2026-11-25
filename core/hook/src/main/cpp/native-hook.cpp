@@ -1304,6 +1304,17 @@ struct FsOpStats {
     std::atomic<int> total{0};
     std::atomic<int> translated{0};
     std::atomic<int> fail{0};
+
+    // std::atomic 不可拷贝/不可赋值 -> 显式删除，避免误用 = 构造新对象来"重置"
+    FsOpStats() = default;
+    FsOpStats(const FsOpStats&) = delete;
+    FsOpStats& operator=(const FsOpStats&) = delete;
+
+    void reset() {
+        total.store(0);
+        translated.store(0);
+        fail.store(0);
+    }
 };
 
 static FsOpStats g_fs_mkdir_stats;
@@ -2345,10 +2356,10 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeResetFsStats(
     JNIEnv* env, jobject thiz)
 {
     (void)env; (void)thiz;
-    g_fs_mkdir_stats = FsOpStats();
-    g_fs_opendir_stats = FsOpStats();
-    g_fs_unlink_stats = FsOpStats();
-    g_fs_rename_stats = FsOpStats();
+    g_fs_mkdir_stats.reset();
+    g_fs_opendir_stats.reset();
+    g_fs_unlink_stats.reset();
+    g_fs_rename_stats.reset();
     g_fs_logs.store(0);
     std::lock_guard<std::mutex> guard(g_fs_recent_mu);
     g_fs_recent_seq.store(0);
