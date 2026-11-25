@@ -1,0 +1,16 @@
+packageName => mark.via
+opPackageName => com.nextvm.app
+filesDir => <ROOT>/data/1/files
+cacheDir => <ROOT>/data/1/cache
+codeCacheDir => <ROOT>/data/1/code_cache
+dataDir => <ROOT>/data/1
+noBackupFilesDir => <ROOT>/data/1/no_backup
+databasePath(n.db) => <ROOT>/data/1/databases/n.db
+dir(x,0) => <ROOT>/data/1/app_x
+externalFilesDir(null) => <ROOT>/data/1/sdcard/Android/data/<GUEST>/files
+externalFilesDirs(null) => <ROOT>/data/1/sdcard/Android/data/<GUEST>/files
+externalCacheDir => <ROOT>/data/1/sdcard/Android/data/<GUEST>/cache
+externalCacheDirs => <ROOT>/data/1/sdcard/Android/data/<GUEST>/cache
+externalMediaDirs => <ROOT>/data/1/sdcard/Android/media/<GUEST>
+obbDir => <ROOT>/data/1/sdcard/Android/obb/<GUEST>
+obbDirs => <ROOT>/data/1/sdcard/Android/obb/<GUEST>
