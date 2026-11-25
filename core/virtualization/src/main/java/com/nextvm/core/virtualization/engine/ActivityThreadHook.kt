@@ -22,6 +22,9 @@ import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
 import java.io.File
 import com.nextvm.core.services.gms.GoogleAccountInfo
 import timber.log.Timber
+import com.nextvm.core.common.diagnostics.CheckResult
+import com.nextvm.core.common.diagnostics.CheckState
+import com.nextvm.core.common.diagnostics.DiagnosticsHolder
 
 /**
  * ActivityThreadHook — The core mechanism that makes virtual apps work.
@@ -428,6 +431,7 @@ class ActivityThreadHook(
             val activityInfo = infoField?.get(item) ?: return false
 
             // === STEP 0: Pre-register the activity token in mActivities ===
+        DiagnosticsHolder.stage("activity", "step0 preRegisterToken done")
             // TransactionExecutor calls getActivityClient(token) BEFORE our hook
             // can finish. If the token is absent from ActivityThread.mActivities,
             // the framework crashes with "Target activity: Not found for token".
@@ -448,6 +452,7 @@ class ActivityThreadHook(
             }
 
             // === STEP 1: Swap the Activity class name ===
+        DiagnosticsHolder.stage("activity", "step1 swapActivityName done")
             val aiClass = activityInfo::class.java
 
             // Set ActivityInfo.name to the real guest Activity class
@@ -499,6 +504,7 @@ class ActivityThreadHook(
             intent.component = ComponentName(targetPackage, targetActivity)
 
             // === STEP 1.5 (v52): Begin the breadcrumb witness BEFORE
+        DiagnosticsHolder.stage("activity", "step1.5 breadcrumbWitness done")
             // the LoadedApk surgery below, and attach its file right
             // away. The guest files dir is known from the instance data
             // dir, so the log reaches disk even if this guest process
@@ -514,13 +520,16 @@ class ActivityThreadHook(
             }
 
             // === STEP 2: Replace ClassLoader in LoadedApk ===
+        DiagnosticsHolder.stage("activity", "step2 replaceClassLoader done")
             replaceClassLoader(targetPackage, instanceId, apkPath)
 
             // === STEP 2.1 (v79 probe): inspect the resource state of
+        DiagnosticsHolder.stage("activity", "step2.1 resourceProbe done")
             // the clone AOSP is about to consume for this launch ===
             probeLaunchResources(targetPackage, apkPath, targetActivity)
 
             // === STEP 2.2 (v80/v81): launch103 proved the guest APK
+        DiagnosticsHolder.stage("activity", "step2.2 apkWatchdog done")
             // copy exists at StartPage time but is gone ~6s later
             // when AppTab launches; launch104's watcher caught the
             // unlink inside ZWRisk.setup() (agree flow, ~160ms
@@ -529,6 +538,7 @@ class ActivityThreadHook(
             startApkWatchdog(instanceId, apkPath)
 
             // === STEP 2.5: Boot guest Application lifecycle (CRITICAL) ===
+        DiagnosticsHolder.stage("activity", "step2.5 bootApplication done")
             // Most Android apps require Application.onCreate() to run before any
             // Activity is created. Firebase, Hilt, WorkManager, AndroidX Startup
             // all initialize via Application or ContentProvider.onCreate().
@@ -538,6 +548,7 @@ class ActivityThreadHook(
             }
 
             // === STEP 3: Register pending resource injection ===
+        DiagnosticsHolder.stage("activity", "step3 pendingResourceInject done")
             // Resources and theme are injected via Instrumentation.callActivityOnCreate()
             // or in the ActivityThread.performLaunchActivity() flow AFTER the Activity is
             // instantiated. We register the pending injection so the next created Activity
@@ -545,11 +556,13 @@ class ActivityThreadHook(
             registerPendingResourceInjection(instanceId, apkPath, targetPackage)
 
             // === STEP 4: Register pending VirtualContext wrapping ===
+        DiagnosticsHolder.stage("activity", "step4 pendingContextWrap done")
             // The VirtualContext is attached after Activity.attach() is called.
             // We track that this launch needs context replacement.
             registerPendingContextWrap(instanceId, targetPackage, processSlot)
 
             // === STEP 5: Register Instrumentation hook for post-create injection ===
+        DiagnosticsHolder.stage("activity", "step5 instrumentationHook done")
             // Hook Instrumentation.callActivityOnCreate to inject resources + context
             // BEFORE the Activity's own onCreate() runs
             hookInstrumentationIfNeeded()

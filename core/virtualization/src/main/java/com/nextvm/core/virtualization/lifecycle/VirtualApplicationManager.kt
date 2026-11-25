@@ -19,6 +19,9 @@ import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.nextvm.core.common.diagnostics.CheckResult
+import com.nextvm.core.common.diagnostics.CheckState
+import com.nextvm.core.common.diagnostics.DiagnosticsHolder
 
 /**
  * VirtualApplicationManager — Manages guest app Application lifecycle.
@@ -564,9 +567,11 @@ class VirtualApplicationManager @Inject constructor(
             }
 
             // Step 1: Prepare ApplicationInfo on the virtual context
+        DiagnosticsHolder.stage("application", "step1 buildApplicationInfo done")
             val appInfo = buildApplicationInfo(packageName, apkPath, virtualContext)
 
             // Step 2: Create Application instance
+        DiagnosticsHolder.stage("application", "step2 createApplication done")
             val application = createApplication(
                 instanceId = instanceId,
                 packageName = packageName,
@@ -577,6 +582,7 @@ class VirtualApplicationManager @Inject constructor(
             ) ?: return null
 
             // Step 3: Create ApplicationRecord
+        DiagnosticsHolder.stage("application", "step3 createRecord done")
             val record = ApplicationRecord(
                 instanceId = instanceId,
                 packageName = packageName,
@@ -587,6 +593,7 @@ class VirtualApplicationManager @Inject constructor(
             applications[instanceId] = record
 
             // Step 3.5: Set the guest Application on VirtualContext so that
+        DiagnosticsHolder.stage("application", "step3.5 setGuestApplication done")
             // getApplicationContext() returns the real Application instance.
             // This is CRITICAL for AndroidX libraries (ProcessLifecycleInitializer,
             // WorkManager, Firebase) which cast getApplicationContext() to Application.
@@ -595,6 +602,7 @@ class VirtualApplicationManager @Inject constructor(
             }
 
             // Step 4: Attach base context
+        DiagnosticsHolder.stage("application", "step4 attachBaseContext done")
             // v35: same stock-init cover as the framework path —
             // hijack's initailise runs inside this attach.
             legacyPrevInstr = swapInStockInstrumentation(packageName)
@@ -605,6 +613,7 @@ class VirtualApplicationManager @Inject constructor(
             Timber.tag(TAG).d("Application.attachBaseContext() complete")
 
             // Step 4.5: Patch LoadedApk.mApplication to the guest Application.
+        DiagnosticsHolder.stage("application", "step4.5 patchLoadedApkApplication done")
             // ContextImpl.getApplicationContext() returns LoadedApk.getApplication()
             // which normally returns the HOST Application. By patching mApplication,
             // even code that bypasses our ContextWrapper chain (e.g., framework-internal
@@ -612,6 +621,7 @@ class VirtualApplicationManager @Inject constructor(
             patchLoadedApkApplication(virtualContext, application)
 
             // Step 5: Install ContentProviders BEFORE Application.onCreate()
+        DiagnosticsHolder.stage("application", "step5 providerStage done")
             // This is critical — AndroidX Startup, WorkManager, Firebase all use
             // ContentProviders that must be initialized before the Application.
             if (providerNames.isNotEmpty()) {
@@ -629,6 +639,7 @@ class VirtualApplicationManager @Inject constructor(
             }
 
             // Step 6: Call Application.onCreate()
+        DiagnosticsHolder.stage("application", "step6 applicationOnCreate done")
             callApplicationOnCreate(application)
             probePluginLoaderState(application, record)
             record.state = ApplicationState.RUNNING

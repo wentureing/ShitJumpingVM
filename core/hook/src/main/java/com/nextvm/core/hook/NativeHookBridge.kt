@@ -1,5 +1,8 @@
 package com.nextvm.core.hook
 
+import com.nextvm.core.common.diagnostics.CheckResult
+import com.nextvm.core.common.diagnostics.CheckState
+import com.nextvm.core.common.diagnostics.DiagnosticsHolder
 import android.content.Context
 import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.findField
@@ -267,13 +270,42 @@ class NativeHookBridge @Inject constructor() {
 
         // Phase 1: Java-level IO hooks
         val javaHooksInstalled = installJavaIoHooks()
+        DiagnosticsHolder.check(
+            CheckResult(
+                path = "native", step = "phase1", name = "javaIoHooks",
+                state = CheckState.OK,
+                target = "libcore.io.Linux",
+                expected = if (javaHooksInstalled) "installed" else "unchanged_default_off",
+                actual = if (javaHooksInstalled) "installed" else "unchanged_default_off"
+            )
+        )
 
         // Phase 2: Try to load native library for PLT hooks (GOT patching)
         nativeHooksAvailable = tryLoadNativeLibrary()
+        DiagnosticsHolder.check(
+            CheckResult(
+                path = "native", step = "phase2", name = "loadNativeLibrary",
+                state = if (nativeHooksAvailable) CheckState.OK else CheckState.FAIL,
+                target = "libnextvm.so",
+                expected = "loaded",
+                actual = if (nativeHooksAvailable) "loaded" else "missing",
+                reason = if (nativeHooksAvailable) null else "dlopen_failed"
+            )
+        )
 
         if (nativeHooksAvailable) {
             try {
                 val nativeResult = nativeInit()
+                DiagnosticsHolder.check(
+                    CheckResult(
+                        path = "native", step = "phase2", name = "nativeInit",
+                        state = if (nativeResult) CheckState.OK else CheckState.FAIL,
+                        target = "GOT patches",
+                        expected = "installed",
+                        actual = if (nativeResult) "installed" else "failed",
+                        reason = if (nativeResult) null else "native_init_returned_false"
+                    )
+                )
                 Timber.tag(TAG).i("Native PLT hooks initialized: $nativeResult")
 
                 // Set host data prefix + virtual data root for native-level redirections
@@ -282,6 +314,10 @@ class NativeHookBridge @Inject constructor() {
                         nativeSetHostDataPrefix(ctx.dataDir.absolutePath)
                         val virtualRoot = java.io.File(ctx.filesDir, "virtual").absolutePath
                         nativeSetVirtualDataRoot(virtualRoot)
+                        DiagnosticsHolder.stage(
+                            "native",
+                            "phase2 dataRoot set (prefix=${ctx.dataDir.absolutePath} root=$virtualRoot)"
+                        )
                         Timber.tag(TAG).d("Native prefix=%s, root=%s", ctx.dataDir.absolutePath, virtualRoot)
                     } catch (e: Exception) {
                         Timber.tag(TAG).w("Failed to set native data paths: ${e.message}")

@@ -1,5 +1,8 @@
 package com.nextvm.core.virtualization.lifecycle
 
+import com.nextvm.core.common.diagnostics.CheckResult
+import com.nextvm.core.common.diagnostics.CheckState
+import com.nextvm.core.common.diagnostics.DiagnosticsHolder
 import com.nextvm.core.common.DebugFlags
 import com.nextvm.core.common.DebugTrace
 import com.nextvm.core.model.VirtualConstants
@@ -34,6 +37,21 @@ internal fun VirtualApplicationManager.registerGuestRedirections(
 
         val rules = nativeHookBridge.getPathRedirectSnapshot().size
         val nativeRules = nativeHookBridge.getNativeRedirectCount()
+        DiagnosticsHolder.check(
+            CheckResult(
+                path = "path", step = "v142", name = "registerRules",
+                state = if (rules > 0 && nativeRules == rules) CheckState.OK else CheckState.FAIL,
+                target = "g_path_redirects",
+                expected = "kotlin=$rules native=$rules",
+                actual = "kotlin=$rules native=$nativeRules",
+                context = linkedMapOf("pkg" to guestPkg, "appDir" to appDir.absolutePath),
+                reason = when {
+                    rules == 0 -> "no_rules_registered"
+                    nativeRules != rules -> "native_not_synced"
+                    else -> null
+                }
+            )
+        )
         DebugTrace.event(
             "v142",
             "registered rules kotlin=$rules native=$nativeRules appDir=${appDir.absolutePath} sdcard=${sdcardDir.absolutePath}"
