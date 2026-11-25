@@ -166,21 +166,21 @@ class VirtualContext(
     override fun getDatabasePath(name: String): File {
         // Match framework behavior: absolute paths are returned as-is
         if (name.startsWith(File.separator)) return File(name)
-        return if (pathFidelity) {
-            sandboxManager.getDatabasesDir(instanceId)
+        val dbDir = sandboxManager.getDatabasesDir(instanceId)
+        return if (shouldUseSyntheticContent(pathFidelity, contentPathsUseReal)) {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "databases/$name")
         } else {
-            File(sandboxManager.getDatabasesDir(instanceId), name)
+            File(dbDir, name)
         }
     }
 
-    override fun getDir(name: String, mode: Int): File =
-        if (pathFidelity) {
-            File(appDir, "app_$name").also { it.mkdirs() }
+    override fun getDir(name: String, mode: Int): File {
+        // 无论是否合成，沙箱目录都要先建（写入能落沙箱的前提）
+        val sandboxDir = File(appDir, "app_$name").also { it.mkdirs() }
+        return contentDir(sandboxDir) {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "app_$name")
-        } else {
-            File(appDir, "app_$name").also { it.mkdirs() }
         }
+    }
 
     override fun getExternalFilesDir(type: String?): File {
         // 先确保沙箱目录存在（无论如何都要建），再决定对外暴露哪条路径。
@@ -246,7 +246,7 @@ class VirtualContext(
         // 实测证据：沙箱里存在 <instance>/app_webview_<pkg>/，说明 WebView 确实用
         // VirtualContext 的目录方法拿数据目录；此前 getDataDir() 始终返回沙箱 appDir，
         // 而待加载的 html 也在 appDir/files 下 -> 「文件在 dataDir 内」-> 走特殊分支 -> text/plain。
-        val dir = if (pathFidelity || detachedAppInfoEnabled()) {
+        val dir = if (shouldUseSyntheticMetadata(pathFidelity, detachedAppInfoEnabled())) {
             File(VirtualConstants.syntheticDataDir(guestPackageName))
         } else {
             appDir
@@ -363,7 +363,7 @@ class VirtualContext(
 
             // v135 path fidelity: report stock-install paths instead of
             // sandbox paths. I/O on these is redirected by v135-pathfidelity.
-            if (pathFidelity) {
+            if (shouldUseSyntheticMetadata(pathFidelity)) {
                 dataDir = VirtualConstants.syntheticDataDir(guestPackageName)
                 nativeLibraryDir = VirtualConstants.syntheticLibDir(guestPackageName)
                 val synthApk = VirtualConstants.syntheticApkPath(guestPackageName)
@@ -668,3 +668,15 @@ internal fun shouldUseSyntheticContent(
     pathFidelity: Boolean,
     contentPathsUseReal: Boolean,
 ): Boolean = pathFidelity && !contentPathsUseReal
+
+/**
+ * **元数据**路径（`getDataDir()` / `ApplicationInfo` 的 dataDir/sourceDir/…）是否用合成路径。
+ *
+ * 与 [shouldUseSyntheticContent] 的区别：**不受 `contentPathsUseReal` 影响**。
+ * 原因：内容目录用真路径是为了让 WebView 的 isolated 进程读到文件；
+ * 而元数据是反双开检测最常看的地方，必须继续伪装。
+ */
+internal fun shouldUseSyntheticMetadata(
+    pathFidelity: Boolean,
+    detachedAppInfo: Boolean = false,
+): Boolean = pathFidelity || detachedAppInfo
