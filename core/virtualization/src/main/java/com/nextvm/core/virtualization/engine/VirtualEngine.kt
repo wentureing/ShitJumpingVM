@@ -35,6 +35,11 @@ import com.nextvm.core.virtualization.lifecycle.VirtualApplicationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualConfigurationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualResourceManager
 import com.nextvm.core.virtualization.process.VirtualMultiProcessManager
+import com.nextvm.core.virtualization.process.RecordSnapshot
+import com.nextvm.core.virtualization.process.SlotLeaseRegistry
+import com.nextvm.core.virtualization.process.SlotReconciler
+import com.nextvm.core.virtualization.process.SlotStatus
+import com.nextvm.core.virtualization.process.SlotStatusProbe
 import com.nextvm.core.virtualization.ui.VirtualWindowManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +137,9 @@ class VirtualEngine @Inject constructor(
 
     // Running apps: instanceId -> process slot
     private val runningApps = mutableMapOf<String, Int>()
+
+    // 会话租约：instanceId -> slot/stub（Step 0a 只登记不使用；Step 2 起接管复用）
+    private val slotLeases = SlotLeaseRegistry()
 
     // Thread-safety lock for initialization
     private val initLock = Any()
@@ -881,6 +889,29 @@ class VirtualEngine @Inject constructor(
      * Used by ActivityThreadHook to identify which instance is active.
      */
     fun getRunningApps(): Map<String, Int> = runningApps.toMap()
+
+    /**
+     * 只读：当前各 process slot 的真实状态（不回收、不归还、不启动任何东西）。
+     *
+     * 事实来自系统（`:pN` 进程 + 容器自己的 task）与租约表；任何异常都退化为空表。
+     */
+    fun slotStatus(): List<SlotStatus> {
+        val records = runningApps.keys.mapNotNull { id ->
+            findApp(id)?.let { RecordSnapshot(id, it.packageName) }
+        }
+        return runCatching {
+            val (procs, tasks) = SlotStatusProbe.snapshot(context)
+            SlotReconciler.reconcile(
+                leases = slotLeases.all(),
+                procs = procs,
+                tasks = tasks,
+                records = records,
+            ).statuses
+        }.getOrElse {
+            Timber.tag(TAG).w(it, "slotStatus failed")
+            emptyList()
+        }
+    }
 
     /**
      * Deliver an FCM message intent to a specific virtual app instance.
