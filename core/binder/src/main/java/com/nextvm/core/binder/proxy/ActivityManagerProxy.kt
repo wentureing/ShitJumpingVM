@@ -1067,7 +1067,12 @@ class ActivityManagerProxy(
                 // 设计意图（2026-11-27）：guest 进程名就是 guest 包名（与 setArgV0/kernel comm 一致）。
                 // AMS 记录里本进程仍带 stub 身份（com.nextvm.app:pN），这是 guest 唯一能看到
                 // stub 名字的通道 → 在透传前把"本进程条目"改写掉，与其它名字通道对齐。
-                val guestPkg = findCallingGuestPkg()
+                // 只在 guest 进程改写：主进程的 getProcessName() 是 com.nextvm.app，
+                // 若也改写会污染容器自己的探测（实测 ProcTrace 出现 name=mark.via 的宿主条目）。
+                val guestPkg = findCallingGuestPkg()?.takeIf { p ->
+                    val self = runCatching { android.app.Application.getProcessName() }.getOrNull()
+                    self != null && (self == p || self.startsWith("$p:"))
+                }
                 val sb = StringBuilder("call own=")
                 var found = false
                 for (e in processList) {
