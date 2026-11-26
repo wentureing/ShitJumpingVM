@@ -30,7 +30,9 @@ import com.nextvm.core.virtualization.diag.dump.MapsSnapshot
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.diag.dump.RealSnap
 import com.nextvm.core.virtualization.engine.LifecycleRecorder
+import com.nextvm.core.virtualization.lifecycle.startup.ActivityThreadApplicationPatch
 import com.nextvm.core.virtualization.lifecycle.startup.ApplicationInfoFactory
+import com.nextvm.core.virtualization.lifecycle.startup.GuestBindBackgroundTasks
 import com.nextvm.core.virtualization.lifecycle.startup.ApplicationOnCreateInvoker
 import com.nextvm.core.virtualization.lifecycle.startup.ContentProviderInitializer
 import com.nextvm.core.virtualization.lifecycle.startup.GuestApplicationFactory
@@ -249,10 +251,7 @@ class VirtualApplicationManager @Inject constructor(
                     )
                     scheduleGuestStackDumps(packageName)
                     scheduleHijackTrace(packageName)
-                    DexMemDump.schedule(packageName, fwApp.filesDir)
-                    StateProbe.schedule(packageName, fwApp.filesDir)
-                    WebViewWatch.schedule(packageName, fwApp.filesDir)
-                    WebViewWarmup.schedule(packageName, fwApp.filesDir)
+                    GuestBindBackgroundTasks.scheduleObservers(packageName, fwApp.filesDir)
                     return fwApp
                 }
                 GuestBreadcrumb.log("framework path returned null, falling back to legacy bind")
@@ -342,10 +341,7 @@ class VirtualApplicationManager @Inject constructor(
             GuestBreadcrumb.log("bind complete (legacy path)")
             scheduleGuestStackDumps(packageName)
             scheduleHijackTrace(packageName)
-            DexMemDump.schedule(packageName, application.filesDir)
-            StateProbe.schedule(packageName, application.filesDir)
-            WebViewWatch.schedule(packageName, application.filesDir)
-            WebViewWarmup.schedule(packageName, application.filesDir)
+            GuestBindBackgroundTasks.scheduleObservers(packageName, application.filesDir)
             return application
 
         } catch (e: Exception) {
@@ -867,58 +863,8 @@ class VirtualApplicationManager @Inject constructor(
         }
     }
 
-    private fun patchActivityThreadApplication(application: android.app.Application) {
-        val enabled = try {
-            System.getProperty("nextvm.webviewAppContext", "1") != "0"
-        } catch (_: Throwable) {
-            true
-        }
-        if (!enabled) {
-            GuestBreadcrumb.log("v138-appctx disabled by property")
-            return
-        }
-        try {
-            val atClass = Class.forName("android.app.ActivityThread")
-            val thread = try {
-                atClass.getMethod("currentActivityThread").invoke(null)
-            } catch (_: Throwable) {
-                null
-            }
-            if (thread == null) {
-                GuestBreadcrumb.log("v138-appctx skip: currentActivityThread()=null")
-                return
-            }
-
-            val initialField = fieldOf(atClass, "mInitialApplication")
-            val before = (initialField.get(thread) as? android.content.Context)?.packageName
-            initialField.set(thread, application)
-
-            var bindInfo = "none"
-            try {
-                val bindField = fieldOf(atClass, "mBoundApplication")
-                val bindData = bindField.get(thread)
-                if (bindData != null) {
-                    val ctxField = fieldOf(bindData.javaClass, "appContext")
-                    val beforeCtx =
-                        (ctxField.get(bindData) as? android.content.Context)?.packageName
-                    ctxField.set(bindData, application)
-                    bindInfo = "$beforeCtx -> ${application.packageName}"
-                }
-            } catch (t: Throwable) {
-                bindInfo = "failed: " + t.javaClass.simpleName
-            }
-
-            GuestBreadcrumb.log(
-                "v138-appctx mInitialApplication " + before + " -> " +
-                    application.packageName + " ; mBoundApplication.appContext " + bindInfo
-            )
-        } catch (t: Throwable) {
-            GuestBreadcrumb.log(
-                "v138-appctx FAILED: " + t.javaClass.simpleName + ": " + t.message
-            )
-        }
-    }
-
+    private fun patchActivityThreadApplication(application: android.app.Application) =
+        ActivityThreadApplicationPatch.apply(application)
 
     /**
      * Framework-native bind (B2): build the guest's app ContextImpl
