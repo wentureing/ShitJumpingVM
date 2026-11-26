@@ -13,6 +13,10 @@ internal interface PathProbe {
     fun translate(path: String): String
     fun redirectionCount(): Int
     fun nativeAvailable(): Boolean
+    /** 当前真实规则快照（S7 抽样用）。 */
+    fun ruleSnapshot(): Map<String, String>
+    /** Java 层 I/O 统计原文（S8 用；未安装 hook 时为 null）。 */
+    fun javaIoStats(): String?
 }
 
 internal class ContainerSelfCheck(
@@ -43,6 +47,8 @@ internal class ContainerSelfCheck(
         unknownPathUntouched(),
         diagChannel(),
         configSanity(),
+        realRuleSample(),
+        diagWriteNotCounted(),
     )
 
     /** 一行汇总：`hookcheck ok=N fail=M S1:ok S2:ok ...` */
@@ -111,6 +117,58 @@ internal class ContainerSelfCheck(
         }
     }
 
+    /**
+     * S7：从**真实规则表**抽一条做 translate 往返。
+     *
+     * S1/S2 用的是自造临时规则，只能证明机制可用；真实违规（规则没注册/注册错进程）它是全绿的。
+     */
+    private fun realRuleSample(): Check = guard("S7", "真实规则抽样", {
+        val sample = paths.ruleSnapshot().entries.firstOrNull()
+            ?: return@guard Check("S7", "真实规则抽样", false, "规则表为空（guest 未注册？）")
+        val from = sample.key
+        val to = sample.value
+        val probe = if (from.endsWith("/")) from + PROBE_NAME else "$from/" + PROBE_NAME
+        val got = paths.translate(probe)
+        val ok = got.startsWith(to.trimEnd('/'))
+        Check(
+            "S7",
+            "真实规则抽样",
+            ok,
+            "rules=${paths.redirectionCount()} from=$from got=$got",
+        )
+    })
+
+    /**
+     * S8：诊断文件写入应计入 `diag`、**不**计入 `total`（否则 Java IO 指标被日志自身污染）。
+     *
+     * 未安装 javaIo hook（默认 `javaIo=0`）时无从观察 → 记 skipped 而不是 fail。
+     */
+    private fun diagWriteNotCounted(): Check {
+        val f = diagFile
+            ?: return Check("S8", "诊断写入不计入 total", true, "skipped(no diag file)")
+        val before = parseIoStats(paths.javaIoStats())
+            ?: return Check("S8", "诊断写入不计入 total", true, "skipped(no javaIo hook)")
+        repeat(WRITE_ROUNDS) { runCatching { f.appendText("selfcheck s8\n") } }
+        val after = parseIoStats(paths.javaIoStats())
+            ?: return Check("S8", "诊断写入不计入 total", false, "stats 读取失败")
+        val diagDelta = after.first - before.first
+        val totalDelta = after.second - before.second
+        return Check(
+            "S8",
+            "诊断写入不计入 total",
+            diagDelta >= WRITE_ROUNDS && totalDelta == 0,
+            "diagDelta=$diagDelta totalDelta=$totalDelta",
+        )
+    }
+
+    /** 解析 `total=N ... diag=N`，返回 (diag, total)；缺字段返回 null。 */
+    private fun parseIoStats(s: String?): Pair<Int, Int>? {
+        if (s == null) return null
+        val diag = Regex("diag=(\\d+)").find(s)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        val total = Regex("total=(\\d+)").find(s)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        return diag to total
+    }
+
     private inline fun guard(
         id: String,
         name: String,
@@ -129,5 +187,11 @@ internal class ContainerSelfCheck(
         const val PREFIX_IN = "/selfcheck/in/"
         const val PREFIX_OUT = "/selfcheck/out/"
         const val PREFIX_W = "/selfcheck/w/"
+
+        /** S7 抽样用的相对路径片段（拼到真实规则前缀后面）。 */
+        private const val PROBE_NAME = "selfcheck.rule"
+
+        /** S8 写入轮数：太少可能被缓存/合并掩盖。 */
+        private const val WRITE_ROUNDS = 3
     }
 }

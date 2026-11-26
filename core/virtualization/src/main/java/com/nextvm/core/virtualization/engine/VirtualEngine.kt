@@ -20,6 +20,7 @@ import com.nextvm.core.virtualization.diag.PathProbe
 import com.nextvm.core.framework.parsing.FrameworkApkParser
 import com.nextvm.core.framework.parsing.FullPackageInfo
 import com.nextvm.core.hook.AntiDetectionEngine
+import com.nextvm.core.hook.JavaIoHooks
 import com.nextvm.core.hook.IdentitySpoofingEngine
 import com.nextvm.core.hook.NativeHookBridge
 import com.nextvm.core.model.*
@@ -177,6 +178,8 @@ class VirtualEngine @Inject constructor(
             override fun translate(path: String) = nativeHookBridge.translatePath(path)
             override fun redirectionCount() = nativeHookBridge.getRedirectionCount()
             override fun nativeAvailable() = nativeHookBridge.isNativeAvailable()
+            override fun ruleSnapshot() = nativeHookBridge.getPathRedirectSnapshot()
+            override fun javaIoStats() = JavaIoHooks.stats()
         }
         val checker = ContainerSelfCheck(
             paths = probe,
