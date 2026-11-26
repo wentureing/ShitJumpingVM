@@ -3,6 +3,7 @@ package com.nextvm.core.virtualization.engine
 import com.nextvm.core.model.VirtualConstants
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -151,5 +152,38 @@ class StubRegistryTest {
         assertEquals("service 同理", svc, registry.resolveServiceStub(2))
         // 其它 slot 不受影响
         assertNotNull(registry.resolveStub(1, "standard"))
+    }
+
+    // ---------------- R1-R3 L1：stopApp 归还路径（2026-11-27 Step 1） ----------------
+
+    @Test
+    fun `R1 池子耗尽后归还可再次解析`() {
+        val used = (0 until VirtualConstants.STUB_ACTIVITIES_STANDARD)
+            .map { registry.resolveStub(1, "standard")!! }
+        assertEquals(VirtualConstants.STUB_ACTIVITIES_STANDARD, used.size)
+        assertNull("耗尽后应为 null", registry.resolveStub(1, "standard"))
+
+        registry.releaseAllStubsForSlot(1)
+
+        assertEquals("归还后首个应可再分配", used.first(), registry.resolveStub(1, "standard"))
+    }
+
+    @Test
+    fun `R2 只归还该 slot 其余 slot 保留已用记录`() {
+        val s1 = registry.resolveStub(1, "standard")!!
+        val s2 = registry.resolveStub(2, "standard")!!
+        registry.releaseAllStubsForSlot(1)
+
+        assertEquals("slot1 已归还", s1, registry.resolveStub(1, "standard"))
+        val nextS2 = registry.resolveStub(2, "standard")
+        assertNotNull(nextS2)
+        assertNotEquals("slot2 的已用记录不应被清掉", s2, nextS2)
+    }
+
+    @Test
+    fun `R3 从未分配过的 slot 归还是 no-op`() {
+        registry.releaseAllStubsForSlot(5)
+        registry.releaseAllStubsForSlot(-1)
+        assertNotNull(registry.resolveStub(5, "standard"))
     }
 }

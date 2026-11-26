@@ -13,6 +13,7 @@ import com.nextvm.core.binder.proxy.ContentResolverProxy
 import com.nextvm.core.binder.proxy.SystemServiceProxyManager
 import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.DebugFlags
+import com.nextvm.core.common.DebugTrace
 import com.nextvm.core.common.diagnostics.DiagChannel
 import com.nextvm.core.common.diagnostics.DiagFiles
 import com.nextvm.core.virtualization.diag.ContainerSelfCheck
@@ -763,6 +764,24 @@ class VirtualEngine @Inject constructor(
         val kill = runCatching { GuestProcessStopper.stop(pkg) }
             .getOrElse { GuestProcessStopper.StopResult(emptyList(), 0) }
         Timber.tag(TAG).i("Stopped app: $instanceId (pids=${kill.pids} killed=${kill.killed})")
+
+        // L1：stub 池按 slot 归还，否则每 slot 只够 5 次启动（`StubRegistry.resolveStub` 只借不还）。
+        // 位置必须在 SIGKILL 之后：VAMS 记录已清、进程已死。
+        // 守卫 1：同 slot 还有别的实例在跑就不归还（L2 未修时两实例共用 slot）。
+        // 守卫 2：容器重启后 stubRegistry 可能尚未初始化。
+        if (slot != null && ::stubRegistry.isInitialized && runningApps.values.none { it == slot }) {
+            stubRegistry.releaseAllStubsForSlot(slot)
+            // 三条通道：checks.log（结构化，探针读）/ debug-trace.log（Timber）/ logcat（兜底）
+            DiagnosticsHolder.stage(
+                "slot",
+                "released stubs slot=$slot killed=${kill.killed}/${kill.pids.size}",
+            )
+            DebugTrace.event(
+                "l1",
+                "released stubs slot=$slot killed=${kill.killed}/${kill.pids.size}",
+            )
+            Timber.tag(TAG).i("Released stubs for slot $slot (killed=${kill.killed}/${kill.pids.size})")
+        }
         return VmResult.Success(Unit)
     }
 
@@ -907,8 +926,11 @@ class VirtualEngine @Inject constructor(
                 tasks = tasks,
                 records = records,
             ).statuses
-        }.getOrElse {
-            Timber.tag(TAG).w(it, "slotStatus failed")
+        }.getOrElse { t ->
+            // 判定只读文件（logcat 会被 ROM 吞）：checks.log 的 `E slot ...` 是主进程可见证据
+            val msg = "slotStatus failed: " + t.javaClass.simpleName + ": " + t.message
+            DiagnosticsHolder.error("slot", msg, t)
+            DebugTrace.fail("slot", msg)
             emptyList()
         }
     }
