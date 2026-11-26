@@ -29,6 +29,8 @@ import com.nextvm.core.virtualization.diag.suppress.AutofillSuppressor
 import com.nextvm.core.virtualization.diag.dump.MapsSnapshot
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.diag.dump.RealSnap
+import com.nextvm.core.virtualization.diag.dump.GuestStackDumps
+import com.nextvm.core.virtualization.diag.trace.HijackTrace
 import com.nextvm.core.virtualization.engine.LifecycleRecorder
 import com.nextvm.core.virtualization.lifecycle.startup.ActivityThreadApplicationPatch
 import com.nextvm.core.virtualization.lifecycle.startup.ApplicationInfoFactory
@@ -492,106 +494,9 @@ class VirtualApplicationManager @Inject constructor(
         }
     }
 
-    // ==================== Guest stack diagnostics ====================
-    // One-shot per process: after a guest Application binds, dump all
-    // thread stacks (+ the main Looper's pending messages) at
-    // +0.3/+0.7/+1.2/+2/+3/+8/+20s into a stackdump-<pid>.log under the
-    // Application's filesDir (for a framework-bound guest that resolves
-    // to the guest sandbox files dir; readable via run-as).
-    // Exists to answer "the guest UI is up but never advances — what
-    // is it waiting on?" with the actual Java frames instead of
-    // black-box guessing.
-
-    @Volatile private var stackDumpsScheduled = false
-
-    // v68: which guest the scheduled dumps belong to (drives the
-    // late-marks extension inside the dumper thread).
-    @Volatile private var stackDumpPackageName: String? = null
-
-    private fun scheduleGuestStackDumps(packageName: String) {
-        if (stackDumpsScheduled) return
-        stackDumpsScheduled = true
-        stackDumpPackageName = packageName
-        Thread {
-            try {
-                val hostApp = Class.forName("android.app.ActivityThread")
-                    .getMethod("currentApplication").invoke(null)
-                    as? android.app.Application ?: return@Thread
-                val out = java.io.File(
-                    hostApp.filesDir, DiagFiles.stackDump(android.os.Process.myPid())
-                )
-                // Cadence (v29): logcat comparison against a real
-                // device localized the guest's init-pipeline stall to
-                // the first ~1.5s after process start (bind lands at
-                // ~+0.45s), so sample densely across bind+0.3..+3s
-                // to catch threads mid-flight at the stall moment;
-                // +8s/+20s remain as steady-state anchors.
-                val baseMarks = listOf(
-                    300L to "t+0.3s",
-                    700L to "t+0.7s",
-                    1_200L to "t+1.2s",
-                    2_000L to "t+2s",
-                    3_000L to "t+3s",
-                    8_000L to "t+8s",
-                    20_000L to "t+20s"
-                )
-                // v68: China Mobile's post-Agree stall sits INSIDE
-                // ZWRisk.setup's native enumeration (launch90: main
-                // RUNNABLE in Feinnhap.v at both t+8s and t+20s,
-                // hundreds of supervisor-served readlinkat/fstatat
-                // calls). Late marks answer the one open question —
-                // guest-slow-but-finite vs never-returns — and show
-                // what main does if setup ever completes.
-                val marks = if (stackDumpPackageName ==
-                    "com.greenpoint.android.mc10086.activity") {
-                    baseMarks + listOf(
-                        40_000L to "t+40s",
-                        80_000L to "t+80s",
-                        160_000L to "t+160s"
-                    )
-                } else {
-                    baseMarks
-                }
-                var elapsed = 0L
-                for ((at, label) in marks) {
-                    val wait = at - elapsed
-                    if (wait > 0) Thread.sleep(wait)
-                    elapsed = at
-                    GuestMemoryDump.dumpGuestStacks(out, label)
-                }
-            } catch (_: Throwable) {
-                // diagnostics must never disturb the guest
-            }
-        }.apply { isDaemon = true; name = "nv-stackdump" }.start()
-    }
-
-
-    // ==================== Hijack SDK completion trace (v33) ====================
-    // v34 adds the discriminating experiment: after each sample, if
-    // ActivityThread.mInstrumentation is hijack's ProxyInstrumentation,
-    // swap it (and every existing Activity's mInstrumentation) back to
-    // the proxy's oriInstrumentation (the engine's NextVmInstrumentation).
-    // v33 proved the proxy sits in its "hijack suspected" state
-    // permanently in the sandbox (oriClassType=0); if the splash then
-    // advances to MainActivity, the proxy's extracted callbacks were
-    // the gate. If nothing changes, the hijack line is closed.
-    // One-shot per process, unicom only. Static analysis showed the
-    // guest's App.attachBaseContext() calls
-    // com.sdk.hijack.api.HijackSDK.initailise(Application) first thing,
-    // which (a) sets hidden-API exemptions via reflection, (b) wraps
-    // ActivityThread.mInstrumentation in its ProxyInstrumentation,
-    // (c) registers ActivityLifecycleCallbacks, then sets its own
-    // isRegisterActivityLifecycleCallbacks flag as the last step.
-    // Whether all of that actually completes inside the sandbox is
-    // invisible from outside (registerContext swallows failures), so
-    // at +1/+4/+12s after bind we reflectively read back the end
-    // state: the flag, ProxyInstrumentation.instance, the live
-    // ActivityThread/Application instrumentation objects, the
-    // registered lifecycle callbacks, and each running Activity's
-    // mInstrumentation. Log tag "HijackTrace" + a
-    // hijacktrace-<pid>.log next to the stackdumps.
-
-    @Volatile private var hijackTraceScheduled = false
+    /** 栈转储的调度与节奏见 `diag/dump/GuestStackDumps.kt`。 */
+    private fun scheduleGuestStackDumps(packageName: String) =
+        GuestStackDumps.schedule(packageName)
 
     // ==================== v35: stock-init experiment ====================
     // v34 only removed the hijack proxy AFTER bind; it never changed
@@ -672,35 +577,9 @@ class VirtualApplicationManager @Inject constructor(
         }
     }
 
-    private fun scheduleHijackTrace(packageName: String) {
-        if (packageName != "com.sinovatech.unicom.ui") return
-        if (hijackTraceScheduled) return
-        hijackTraceScheduled = true
-        Thread {
-            try {
-                val hostApp = Class.forName("android.app.ActivityThread")
-                    .getMethod("currentApplication").invoke(null)
-                    as? android.app.Application ?: return@Thread
-                val out = java.io.File(
-                    hostApp.filesDir, DiagFiles.hijackTrace(android.os.Process.myPid())
-                )
-                val marks = listOf(
-                    1_000L to "t+1s", 4_000L to "t+4s",
-                    12_000L to "t+12s", 25_000L to "t+25s"
-                )
-                var elapsed = 0L
-                for ((at, label) in marks) {
-                    val wait = at - elapsed
-                    if (wait > 0) Thread.sleep(wait)
-                    elapsed = at
-                    HijackProbes.sample(out, label, stockInitNote)
-                    HijackProbes.unwrap(out, label, stockInitExperiment, UNWRAP_ENABLED)
-                }
-            } catch (_: Throwable) {
-                // diagnostics must never disturb the guest
-            }
-        }.apply { isDaemon = true; name = "nv-hijacktrace" }.start()
-    }
+    /** 壳追踪的采样节奏见 `diag/trace/HijackTrace.kt`。 */
+    private fun scheduleHijackTrace(packageName: String) =
+        HijackTrace.schedule(packageName, stockInitNote, stockInitExperiment, UNWRAP_ENABLED)
 
     /**
      * v138-appctx：把 ActivityThread 记录的「进程 Application」指向 guest。
