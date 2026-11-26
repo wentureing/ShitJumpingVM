@@ -30,6 +30,8 @@ import com.nextvm.core.virtualization.diag.dump.MapsSnapshot
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.diag.dump.RealSnap
 import com.nextvm.core.virtualization.engine.LifecycleRecorder
+import com.nextvm.core.virtualization.lifecycle.startup.ApplicationInfoFactory
+import com.nextvm.core.virtualization.lifecycle.startup.ApplicationOnCreateInvoker
 import com.nextvm.core.virtualization.lifecycle.startup.ContentProviderInitializer
 import com.nextvm.core.virtualization.lifecycle.startup.GuestApplicationFactory
 
@@ -1596,67 +1598,8 @@ class VirtualApplicationManager @Inject constructor(
 
 
 
-    private fun callApplicationOnCreate(application: Application) {
-        GuestBreadcrumb.log("Application.onCreate enter " + application.javaClass.name)
-        try {
-            // Use Instrumentation if available (more accurate mirroring)
-            val instrumentation = Instrumentation()
-            instrumentation.callApplicationOnCreate(application)
-            Timber.tag(TAG).d("Application.onCreate() called via Instrumentation")
-            GuestBreadcrumb.log("Application.onCreate exit ok")
-        } catch (e: RuntimeException) {
-            // Check if this is a ShizukuProvider SecurityException — swallow it.
-            // ZArchiver calls ShizukuProvider.a() in onCreate() which triggers
-            // ContentResolver.call() to rikka.shizuku.ShizukuProvider. The system
-            // throws SecurityException because INTERACT_ACROSS_USERS_FULL is missing.
-            // ZArchiver can run without Shizuku root access.
-            val cause = e.cause?.cause ?: e.cause ?: e
-            if (cause is SecurityException &&
-                (cause.message?.contains("ShizukuProvider", ignoreCase = true) == true ||
-                 cause.message?.contains("INTERACT_ACROSS_USERS", ignoreCase = true) == true ||
-                 cause.message?.contains("shizuku", ignoreCase = true) == true)
-            ) {
-                GuestBreadcrumb.logThrowable(
-                    "Application.onCreate SecurityException SWALLOWED (shizuku rule)", e)
-                Timber.tag(TAG).w("Shizuku SecurityException in onCreate swallowed — continuing without Shizuku")
-                return
-            }
-            // Not Shizuku-related — try direct call fallback
-            Timber.tag(TAG).w(e, "Instrumentation.callApplicationOnCreate() failed, trying direct")
-            try {
-                application.onCreate()
-            } catch (e2: RuntimeException) {
-                val cause2 = e2.cause?.cause ?: e2.cause ?: e2
-                if (cause2 is SecurityException &&
-                    (cause2.message?.contains("ShizukuProvider", ignoreCase = true) == true ||
-                     cause2.message?.contains("INTERACT_ACROSS_USERS", ignoreCase = true) == true ||
-                     cause2.message?.contains("shizuku", ignoreCase = true) == true)
-                ) {
-                    GuestBreadcrumb.logThrowable(
-                        "Application.onCreate (direct) SecurityException SWALLOWED (shizuku rule)", e2)
-                    Timber.tag(TAG).w("Shizuku SecurityException in direct onCreate swallowed")
-                    return
-                }
-                Timber.tag(TAG).e(e2, "Application.onCreate() direct call also failed")
-                throw e2
-            } catch (e2: Exception) {
-                Timber.tag(TAG).e(e2, "Application.onCreate() direct call also failed")
-                throw e2
-            }
-        } catch (e: Exception) {
-            GuestBreadcrumb.logThrowable(
-                "Application.onCreate via Instrumentation FAILED, calling directly", e)
-            Timber.tag(TAG).w(e, "Instrumentation.callApplicationOnCreate() failed, calling directly")
-            try {
-                application.onCreate()
-                GuestBreadcrumb.log("Application.onCreate exit ok (direct)")
-            } catch (e2: Exception) {
-                GuestBreadcrumb.logThrowable("Application.onCreate direct call FAILED", e2)
-                Timber.tag(TAG).e(e2, "Application.onCreate() direct call also failed")
-                throw e2
-            }
-        }
-    }
+    private fun callApplicationOnCreate(application: Application) =
+        ApplicationOnCreateInvoker.invoke(application)
 
     /**
      * Build an ApplicationInfo suitable for the guest app.
@@ -1665,60 +1608,7 @@ class VirtualApplicationManager @Inject constructor(
         packageName: String,
         apkPath: String,
         virtualContext: Context
-    ): ApplicationInfo {
-        return ApplicationInfo().apply {
-            this.packageName = packageName
-            this.sourceDir = apkPath
-            this.publicSourceDir = apkPath
-            this.dataDir = virtualContext.dataDir.absolutePath
-            this.nativeLibraryDir = virtualContext.applicationInfo.nativeLibraryDir
-            this.processName = packageName
-            this.enabled = true
-            this.flags = ApplicationInfo.FLAG_HAS_CODE or ApplicationInfo.FLAG_ALLOW_CLEAR_USER_DATA
-            // longVersionCode defaults to 0 on new ApplicationInfo
-
-            // Populate metaData from the guest APK so SDKs (AppLovin, Firebase,
-            // Facebook, CronetProvider, etc.) can read their <meta-data> tags.
-            // Also inject essential GMS meta-data if not already present.
-            try {
-                val pm = virtualContext.packageManager
-                val pkgInfo = pm.getPackageArchiveInfo(
-                    apkPath,
-                    android.content.pm.PackageManager.GET_META_DATA
-                )
-                pkgInfo?.applicationInfo?.let { it2 ->
-                    it2.sourceDir = apkPath
-                    it2.publicSourceDir = apkPath
-                }
-                val bundle = pkgInfo?.applicationInfo?.metaData ?: android.os.Bundle()
-
-                // Inject GMS version meta-data if the guest APK doesn't already have it.
-                // Many SDKs (AppLovin, Firebase Analytics, CronetProvider) crash without this.
-                if (!bundle.containsKey("com.google.android.gms.version")) {
-                    bundle.putInt("com.google.android.gms.version", 243431006)
-                }
-
-                this.metaData = bundle
-            } catch (e: Exception) {
-                Timber.tag(TAG).w(e, "Failed to parse metaData from APK: $apkPath")
-                // At minimum provide GMS version to avoid common SDK crashes
-                this.metaData = android.os.Bundle().apply {
-                    putInt("com.google.android.gms.version", 243431006)
-                }
-            }
-
-            // v135 path fidelity (CM-gated experiment): report
-            // stock-install paths. I/O on these is redirected by
-            // v135-pathfidelity rules registered at guest bind.
-            if (com.nextvm.core.model.VirtualConstants.isPathFidelityGuest(packageName)) {
-                this.dataDir = com.nextvm.core.model.VirtualConstants.syntheticDataDir(packageName)
-                this.nativeLibraryDir = com.nextvm.core.model.VirtualConstants.syntheticLibDir(packageName)
-                val synthApk = com.nextvm.core.model.VirtualConstants.syntheticApkPath(packageName)
-                this.sourceDir = synthApk
-                this.publicSourceDir = synthApk
-            }
-        }
-    }
+    ): ApplicationInfo = ApplicationInfoFactory.build(packageName, apkPath, virtualContext)
 
     /**
      * Terminate a guest app's Application instance.
