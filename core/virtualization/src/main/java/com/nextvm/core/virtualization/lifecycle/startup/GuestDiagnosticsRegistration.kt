@@ -15,8 +15,8 @@ import com.nextvm.core.virtualization.diag.probe.PluginProbes
 import com.nextvm.core.virtualization.diag.suppress.AutofillSuppressor
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.engine.LifecycleRecorder
-import com.nextvm.core.virtualization.lifecycle.ApplicationRecord
 import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
+import com.nextvm.core.virtualization.lifecycle.VirtualApplicationManager.ApplicationRecord
 
 /**
  * guest 侧诊断装配 + Activity 生命周期回调注册（每进程一次）。
