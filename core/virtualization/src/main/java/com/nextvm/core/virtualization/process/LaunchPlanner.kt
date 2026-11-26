@@ -88,7 +88,10 @@ object LaunchPlanner {
                         stubClass = stub,
                         targetActivity = input.mainActivity,
                         registerLease = true,
-                        dropLease = SessionReusePolicy.shouldDropLease(decision, input.status),
+                        // 只有"有租约可丢"时才算 drop：lease==null 时 release 本就是 no-op，
+                        // 但不该对外表达"丢了租约"（P3 固定的行为）
+                        dropLease = input.lease != null &&
+                            SessionReusePolicy.shouldDropLease(decision, input.status),
                     )
                 )
             }
