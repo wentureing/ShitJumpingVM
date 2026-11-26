@@ -126,8 +126,11 @@ class DiagOutputTest {
         val cls = DiagFiles::class.java
         for (f in cls.declaredFields) {
             if (f.type != String::class.java) continue
+            if (f.name == "CONFIG_RESOURCE") continue // 资源路径，不是通道名
             f.isAccessible = true
-            (try { f.get(null) } catch (_: Throwable) { f.get(DiagFiles) } as? String)?.let { out.add(it) }
+            (try { f.get(null) } catch (_: Throwable) { f.get(DiagFiles) } as? String)
+                ?.takeIf { !it.startsWith("/") }
+                ?.let { out.add(it) }
         }
         for (m in cls.declaredMethods) {
             if (m.returnType != String::class.java) continue
