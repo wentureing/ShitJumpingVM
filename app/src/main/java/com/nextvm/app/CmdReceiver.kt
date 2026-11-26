@@ -251,7 +251,8 @@ class CmdReceiver : BroadcastReceiver() {
 
             ACTION_SELF_CHECK -> {
                 val line = try {
-                    engine.selfCheck()
+                    // --es instance <instanceId>：额外给该 guest 写自检请求（guest 下次 resume 时跑）
+                    engine.selfCheck(intent.getStringExtra("instance"))
                 } catch (t: Throwable) {
                     "hookcheck failed ${t.javaClass.simpleName}: ${t.message}"
                 }

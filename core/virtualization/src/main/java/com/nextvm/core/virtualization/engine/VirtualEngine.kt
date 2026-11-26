@@ -16,6 +16,7 @@ import com.nextvm.core.common.DebugFlags
 import com.nextvm.core.common.diagnostics.DiagChannel
 import com.nextvm.core.common.diagnostics.DiagFiles
 import com.nextvm.core.virtualization.diag.ContainerSelfCheck
+import com.nextvm.core.virtualization.diag.SelfCheckRequest
 import com.nextvm.core.virtualization.diag.PathProbe
 import com.nextvm.core.framework.parsing.FrameworkApkParser
 import com.nextvm.core.framework.parsing.FullPackageInfo
@@ -161,15 +162,17 @@ class VirtualEngine @Inject constructor(
      * 容器自检：主动验证路径重定向、写入隔离、诊断通道与配置。
      * 由 CmdReceiver 的 SELF_CHECK 触发，返回一行 hookcheck 汇总。
      */
-    fun selfCheck(): String {
+    /**
+     * 主进程自检；`guestInstanceId` 非空时再给该 guest 写一份自检请求（等它下次 resume 消费）。
+     *
+     * **仅 debug 包**：release 直接返回 skipped，不写 checks.log、不写请求文件。
+     */
+    fun selfCheck(guestInstanceId: String? = null): String {
+        if (!DebugFlags.isDebugBuild()) return "hookcheck skipped(release build)"
         // 写入目标用 app 私有 cacheDir：自检不该在 virtualRoot（用户/Files 页面可见）留任何痕迹。
         val writeRoot = java.io.File(context.cacheDir, "selfcheck")
         val conf = java.io.File(context.filesDir, "path_spoof.conf")
-        val diag = if (DebugFlags.isDebugBuild()) {
-            java.io.File(context.filesDir, DiagFiles.DEBUG_TRACE)
-        } else {
-            null
-        }
+        val diag = java.io.File(context.filesDir, DiagFiles.DEBUG_TRACE)
         val probe = object : PathProbe {
             override fun add(fromPrefix: String, toPrefix: String) =
                 nativeHookBridge.addPathRedirection(fromPrefix, toPrefix)
@@ -198,7 +201,18 @@ class VirtualEngine @Inject constructor(
                 ch.append("S selfcheck.${c.id} ${if (c.ok) "ok" else "FAIL"} ${c.detail}\n")
             }
         }
-        return line
+        // guest 侧：只写请求文件，不阻塞（guest 下次 resume 时自己跑并写 checks.log）
+        val guestNote = if (guestInstanceId == null) {
+            ""
+        } else runCatching {
+            val dir = java.io.File(sandboxManager.getAppDir(guestInstanceId), "files")
+            if (SelfCheckRequest.request(dir)) {
+                " guestRequest=$guestInstanceId"
+            } else {
+                " guestRequest=FAILED($guestInstanceId)"
+            }
+        }.getOrElse { " guestRequest=FAILED(${it.javaClass.simpleName})" }
+        return line + guestNote
     }
 
     fun installActivityBinderWrapEarly(context: Context) {

@@ -21,6 +21,8 @@ import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.nextvm.core.virtualization.diag.GuestSelfCheck
+import com.nextvm.core.virtualization.diag.SelfCheckRequest
 import com.nextvm.core.virtualization.diag.dump.GuestMemoryDump
 import com.nextvm.core.virtualization.diag.fieldOf
 import com.nextvm.core.virtualization.diag.probe.HijackProbes
@@ -406,6 +408,16 @@ class VirtualApplicationManager @Inject constructor(
 
                     override fun onActivityResumed(a: android.app.Activity) {
                         GuestBreadcrumb.log("cb onActivityResumed " + a.javaClass.name)
+                        // 自检请求：**仅 debug 包**、每进程一次（CmdReceiver SELF_CHECK --es instance 写入）
+                        if (!guestSelfCheckDone && com.nextvm.core.common.DebugFlags.isDebugBuild()) {
+                            guestSelfCheckDone = true
+                            runCatching {
+                                val dir = a.applicationContext?.filesDir ?: return@runCatching
+                                if (SelfCheckRequest.consume(dir)) {
+                                    GuestSelfCheck.run(nativeHookBridge, a.application)
+                                }
+                            }
+                        }
                         // v156: trace the login page's load window.
                         // First resume of LoginActivity, once per
                         // process. The init trace never covers this
@@ -1619,6 +1631,9 @@ class VirtualApplicationManager @Inject constructor(
 
     @Volatile private var loginProbeLastActivity: android.app.Activity? = null
     @Volatile private var loginProbeTimerStarted = false
+
+    /** guest 自检：每进程只消费一次请求（debug 包才有意义）。 */
+    @Volatile private var guestSelfCheckDone = false
 
     // v130-watchdog: main-looper stall sampler state.
     private var watchdogStarted = false

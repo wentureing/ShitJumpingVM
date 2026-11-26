@@ -33,6 +33,8 @@ internal class ContainerSelfCheck(
     private val confText: String?,
     /** 诊断通道文件（null 表示不测，例如 release 构建）。 */
     private val diagFile: File?,
+    /** S6 是否强制要求 `path_spoof.conf`（guest 侧读不到主进程配置，传 false）。 */
+    private val confRequired: Boolean = true,
 ) {
 
     class Check(
@@ -113,6 +115,8 @@ internal class ContainerSelfCheck(
     private fun configSanity(): Check {
         val text = confText
         return when {
+            text == null && !confRequired ->
+                Check("S6", "路径配置可读", true, "skipped(guest 侧不读主进程配置)")
             text == null -> Check("S6", "路径配置可读", false, "path_spoof.conf 不存在")
             !text.contains("[豁免名单]") -> Check("S6", "路径配置可读", false, "缺 [豁免名单] 段")
             else -> Check("S6", "路径配置可读", true, "len=${text.length}")

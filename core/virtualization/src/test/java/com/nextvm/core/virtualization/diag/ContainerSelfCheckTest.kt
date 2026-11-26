@@ -162,4 +162,18 @@ class ContainerSelfCheckTest {
         assertFalse(s8bad.detail, s8bad.ok)
         assertTrue(s8bad.detail.contains("totalDelta=6"))
     }
+
+    @Test
+    fun `C10 S6 可关闭（guest 侧读不到主进程配置）`() {
+        // guest 侧：confRequired=false，缺配置记 skipped 而不是 fail
+        val guest = ContainerSelfCheck(
+            FakeProbe(), tmp.root, null, null, confRequired = false
+        ).run()
+        assertTrue(check("S6", guest).ok)
+        assertTrue(check("S6", guest).detail.contains("skipped"))
+
+        // 主进程：仍强制要求
+        val main = ContainerSelfCheck(FakeProbe(), tmp.root, null, null).run()
+        assertFalse(check("S6", main).ok)
+    }
 }
