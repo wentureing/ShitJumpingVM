@@ -36,9 +36,11 @@ import com.nextvm.core.virtualization.lifecycle.VirtualApplicationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualConfigurationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualResourceManager
 import com.nextvm.core.virtualization.process.VirtualMultiProcessManager
+import com.nextvm.core.virtualization.process.LaunchInput
+import com.nextvm.core.virtualization.process.LaunchOutcome
+import com.nextvm.core.virtualization.process.LaunchPlanner
 import com.nextvm.core.virtualization.process.RecordSnapshot
 import com.nextvm.core.virtualization.process.SessionDecision
-import com.nextvm.core.virtualization.process.SessionReusePolicy
 import com.nextvm.core.virtualization.process.SlotLeaseRegistry
 import com.nextvm.core.virtualization.process.SlotReconciler
 import com.nextvm.core.virtualization.process.SlotStatus
@@ -634,49 +636,18 @@ class VirtualEngine @Inject constructor(
                 ?: serviceManager.packageManager.getMainActivity(app.packageName)
                 ?: return VmResult.Error("No main activity found for ${app.packageName}")
 
-            // 2. 会话复用（Step 2）：有活会话就切前台，不消耗 stub、不新建 Task
-            var reusedStub: String? = null
+            // 2. 取会话事实（租约 + 该实例在该 slot 上的真实状态）
             val lease = slotLeases.byInstance(instanceId)
-            if (lease != null) {
-                val st = slotStatus().firstOrNull {
-                    it.slot == lease.slot && it.instanceId == instanceId
-                }
-                if (st != null && st.taskId > 0) slotLeases.noteTaskId(instanceId, st.taskId)
-                val decision = SessionReusePolicy.decide(
-                    enabled = DebugFlags.isOn(DebugFlags.SESSION_REUSE, true),
-                    lease = lease,
-                    status = st,
-                )
-                when (decision) {
-                    SessionDecision.BRING_TO_FRONT -> {
-                        if (st != null && bringTaskToFront(st.taskId)) {
-                            DiagnosticsHolder.stage(
-                                "slot",
-                                "reuse bringToFront instance=$instanceId slot=${lease.slot} task=${st.taskId}",
-                            )
-                            runningApps[instanceId] = app.processSlot
-                            updateAppState(instanceId) {
-                                it.copy(isRunning = true, lastLaunchedAt = System.currentTimeMillis())
-                            }
-                            Timber.tag(TAG).i(
-                                "Reused live session: ${app.appName} (slot=${lease.slot} task=${st.taskId})"
-                            )
-                            return VmResult.Success(Unit)
-                        }
-                        // 切前台失败（ROM 限制 / task 已消失）：沿用原 stub 重开界面
-                        reusedStub = lease.stubClassName
-                    }
-                    // 进程在但没界面（Activity 全 finish）：沿用原 stub，仍不新起进程
-                    SessionDecision.REUSE_STUB -> reusedStub = lease.stubClassName
-                    SessionDecision.NEW_SESSION -> {
-                        if (SessionReusePolicy.shouldDropLease(decision, st)) {
-                            slotLeases.release(instanceId)
-                        }
-                    }
-                }
+            val leaseStatus = if (lease != null) {
+                slotStatus().firstOrNull { it.slot == lease.slot && it.instanceId == instanceId }
+            } else {
+                null
+            }
+            if (leaseStatus != null && leaseStatus.taskId > 0) {
+                slotLeases.noteTaskId(instanceId, leaseStatus.taskId)
             }
 
-            // 2. Get launch mode from VPMS and convert to string for StubRegistry
+            // 3. Get launch mode from VPMS and convert to string for StubRegistry
             val launchModeInt = serviceManager.packageManager.getActivityLaunchMode(
                 app.packageName, mainActivity
             )
@@ -687,21 +658,68 @@ class VirtualEngine @Inject constructor(
                 else -> "standard"
             }
 
-            // 4. Resolve stub class（复用会话时沿用租约里的 stub：同一 affinity → 同一 Task、同一进程）
-            val stubClass = reusedStub ?: stubRegistry.resolveStub(
+            // 4. 纯决策：复用 / 沿用原 stub / 新会话 / 池耗尽（见 LaunchPlanner）
+            val input = LaunchInput(
+                instanceId = instanceId,
+                packageName = app.packageName,
                 slot = app.processSlot,
-                launchMode = launchMode
-            ) ?: run {
-                // 失败必须显式打 E 级 + 落盘：否则只会随返回值被上层 INFO 日志吞掉
-                val msg = "No available stub for process slot ${app.processSlot}" +
-                    " (instance=$instanceId mode=$launchMode)"
+                mainActivity = mainActivity,
+                launchMode = launchMode,
+                sessionReuseEnabled = DebugFlags.isOn(DebugFlags.SESSION_REUSE, true),
+                lease = lease,
+                status = leaseStatus,
+                stubCandidates = stubRegistry.candidatesFor(app.processSlot, launchMode),
+            )
+
+            fun failNoStub(): VmResult.Error {
+                val msg = LaunchPlanner.noStubMessage(input)
                 DiagnosticsHolder.error("slot", msg)
                 DebugTrace.fail("slot", msg)
                 Timber.tag(TAG).e(msg)
                 return VmResult.Error(msg)
             }
-            if (reusedStub == null) {
-                // 先登记租约再启动：进程起来了但租约缺失会变成 ORPHAN（只能人工清理）
+
+            var plan = when (val outcome = LaunchPlanner.plan(input)) {
+                is LaunchOutcome.Failed -> {
+                    DiagnosticsHolder.error("slot", outcome.message)
+                    DebugTrace.fail("slot", outcome.message)
+                    Timber.tag(TAG).e(outcome.message)
+                    return VmResult.Error(outcome.message)
+                }
+                is LaunchOutcome.Planned -> outcome.plan
+            }
+            if (plan.dropLease) slotLeases.release(instanceId)
+
+            // 5. 执行：先试切前台；失败降级为"沿用原 stub 重开"（不能再分配新 stub）
+            if (plan.decision == SessionDecision.BRING_TO_FRONT) {
+                val taskId = leaseStatus?.taskId ?: 0
+                if (bringTaskToFront(taskId)) {
+                    DiagnosticsHolder.stage(
+                        "slot",
+                        "reuse bringToFront instance=$instanceId slot=${plan.slot} task=$taskId",
+                    )
+                    runningApps[instanceId] = app.processSlot
+                    updateAppState(instanceId) {
+                        it.copy(isRunning = true, lastLaunchedAt = System.currentTimeMillis())
+                    }
+                    Timber.tag(TAG).i(
+                        "Reused live session: ${app.appName} (slot=${plan.slot} task=$taskId)"
+                    )
+                    return VmResult.Success(Unit)
+                }
+                val fallbackStub = lease?.stubClassName
+                    ?: stubRegistry.candidatesFor(app.processSlot, launchMode).firstOrNull()
+                    ?: return failNoStub()
+                plan = plan.copy(
+                    decision = SessionDecision.REUSE_STUB,
+                    stubClass = fallbackStub,
+                )
+            }
+
+            val stubClass = plan.stubClass ?: return failNoStub()
+            if (plan.registerLease) {
+                // 先标记占用 + 登记租约再启动：进程起来了但租约缺失会变成 ORPHAN（只能人工清理）
+                stubRegistry.markInUse(stubClass)
                 slotLeases.acquire(app.processSlot, instanceId, stubClass)
             }
 

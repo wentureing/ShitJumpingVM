@@ -46,13 +46,7 @@ class StubRegistry {
             return null
         }
 
-        val candidates = when (launchMode) {
-            "singleTop" -> mapping.stubActivitySingleTop
-            "singleTask" -> mapping.stubActivitySingleTask
-            "singleInstance" -> mapping.stubActivitySingleInstance
-            else -> mapping.stubActivityStandard // "standard" is the default
-        }
-
+        val candidates = poolFor(mapping, launchMode)
         val available = candidates.firstOrNull { it !in inUseStubs }
         if (available != null) {
             inUseStubs.add(available)
@@ -61,6 +55,24 @@ class StubRegistry {
             Timber.tag(TAG).w("No available $launchMode stubs for slot $slot")
         }
         return available
+    }
+
+    /** 该 slot/launchMode 的候选 stub（**只读**，不标记占用）。 */
+    fun candidatesFor(slot: Int, launchMode: String): List<String> {
+        val mapping = slots[slot] ?: return emptyList()
+        return poolFor(mapping, launchMode)
+    }
+
+    /** 把已选中的 stub 标记为占用（由 `LaunchPlanner` 决策后、真正启动前调用）。 */
+    fun markInUse(stubClassName: String) {
+        inUseStubs.add(stubClassName)
+    }
+
+    private fun poolFor(mapping: StubMapping, launchMode: String): List<String> = when (launchMode) {
+        "singleTop" -> mapping.stubActivitySingleTop
+        "singleTask" -> mapping.stubActivitySingleTask
+        "singleInstance" -> mapping.stubActivitySingleInstance
+        else -> mapping.stubActivityStandard // "standard" is the default
     }
 
     /**

@@ -5,9 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.util.Base64
 import android.util.Log
+import com.nextvm.core.model.VmResult
 import com.nextvm.core.sandbox.SandboxManager
 import com.nextvm.core.virtualization.engine.VirtualEngine
-import com.nextvm.core.virtualization.engine.VmResult
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
