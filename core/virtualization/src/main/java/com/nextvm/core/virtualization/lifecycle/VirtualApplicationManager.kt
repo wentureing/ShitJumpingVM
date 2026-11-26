@@ -10,6 +10,8 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import com.nextvm.core.common.AndroidCompat
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.findField
 import com.nextvm.core.common.findMethod
 import com.nextvm.core.common.runSafe
@@ -28,6 +30,7 @@ import com.nextvm.core.virtualization.diag.suppress.AutofillSuppressor
 import com.nextvm.core.virtualization.diag.dump.MapsSnapshot
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.diag.dump.RealSnap
+import com.nextvm.core.virtualization.engine.LifecycleRecorder
 
 /**
  * VirtualApplicationManager — Manages guest app Application lifecycle.
@@ -64,12 +67,8 @@ private fun dumpV148ConnectProbe() {
     try {
         val ev = NativeHookBridge.dumpConnectProbe()
         if (ev.isNullOrEmpty()) return
-        val dir = try {
-            GuestBreadcrumb.filesDir()
-        } catch (_: Throwable) {
-            null
-        } ?: return
-        java.io.File(dir, "v148-connect-probe.log").appendText(ev)
+        if (GuestBreadcrumb.filesDir() == null) return
+        DiagOutput.append(DiagFiles.v148ConnectProbe(), ev)
     } catch (_: Throwable) {
     }
 }
@@ -373,7 +372,7 @@ class VirtualApplicationManager @Inject constructor(
                         )
                     )
                 )
-                com.nextvm.core.virtualization.engine.LifecycleRecorder.install(app)
+                LifecycleRecorder.install(app)
                 GuestBreadcrumb.log("guest diagnostics installed")
                 // Holder 就绪后再 dump —— 规则注册(71ms)早于 Holder install(78ms)，
                 // 在 setupAppRedirections 里 dump 会被 NoOp 静默丢弃。

@@ -1,5 +1,7 @@
 package com.nextvm.core.virtualization.lifecycle
 
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import timber.log.Timber
 import java.io.File
 import java.io.PrintWriter
@@ -82,16 +84,14 @@ object GuestBreadcrumb {
     fun attachFile(filesDir: File) {
         if (!active) return
         try {
-            val f = File(filesDir, "breadcrumb-" + android.os.Process.myPid() + ".log")
+            val name = DiagFiles.breadcrumb(android.os.Process.myPid())
             synchronized(lock) {
-                file = f
+                file = File(filesDir, name)
+                DiagOutput.setDir(filesDir)
                 if (buffer.isNotEmpty()) {
                     val pending = ArrayList(buffer)
                     buffer.clear()
-                    try {
-                        f.appendText(pending.joinToString("\n", postfix = "\n"))
-                    } catch (_: Throwable) {
-                    }
+                    DiagOutput.append(name, pending.joinToString("\n", postfix = "\n"))
                 }
             }
         } catch (_: Throwable) {
@@ -110,10 +110,7 @@ object GuestBreadcrumb {
                 if (f == null) {
                     if (buffer.size < MAX_BUFFER_LINES) buffer.add(line)
                 } else {
-                    try {
-                        f.appendText(line + "\n")
-                    } catch (_: Throwable) {
-                    }
+                    DiagOutput.line(DiagFiles.breadcrumb(android.os.Process.myPid()), line)
                 }
             }
 

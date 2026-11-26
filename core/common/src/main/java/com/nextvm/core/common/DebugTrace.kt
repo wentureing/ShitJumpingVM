@@ -27,7 +27,6 @@ import timber.log.Timber
  */
 object DebugTrace {
 
-    private const val MAX_BYTES = 1_500_000L
     private const val LOG_NAME = "debug-trace.log"
     private const val MAX_PENDING = 800
 
@@ -138,7 +137,7 @@ object DebugTrace {
     private class FileLogTree(val file: File) : Timber.Tree() {
 
         // 落盘统一走 DiagChannel（阈值/失败静默/加锁都在那里）；本类只负责格式化。
-        private val channel = DiagChannel(file, MAX_BYTES)
+        private val channel = DiagChannel(file)
 
         override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
             appendRaw(formatLine(priority, tag ?: "-", message, t))

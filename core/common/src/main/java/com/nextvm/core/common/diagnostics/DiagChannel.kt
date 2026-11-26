@@ -3,28 +3,26 @@ package com.nextvm.core.common.diagnostics
 import java.io.File
 
 /**
- * 单文件诊断通道：追加、超限清空、失败静默。
+ * 单文件诊断通道：追加、超限保留尾部（环形）、失败静默。
  *
- * 把"怎么落盘"收到一处：各组件不再直接 `File(...).appendText(...)`，
- * 但**文件名与内容格式由调用方决定**（本类不改格式）。
- * 说明见 docs/输出/变更/20261125-common职责化与探针接入.md
+ * 镜像文档：`docs/代码镜像/core/common/diagnostics/DiagChannel.md`
  */
 class DiagChannel(
     private val file: File,
     private val maxBytes: Long = DEFAULT_MAX_BYTES,
+    private val keepTail: Boolean = true,
 ) {
 
     private val lock = Any()
 
-    /** 追加一行（含换行由调用方决定）。超限时先清空；任何 IO 失败都吞掉。 */
-    fun append(text: String) {
-        synchronized(lock) {
-            try {
-                if (file.length() > maxBytes) file.writeText("")
-                file.appendText(text)
-            } catch (_: Throwable) {
-                // 诊断失败绝不能影响主流程
-            }
+    /** 追加一段文本；返回是否写入成功（任何 IO 失败都吞掉并返回 false）。 */
+    fun append(text: String): Boolean = synchronized(lock) {
+        try {
+            rotateIfNeeded(text.length)
+            file.appendText(text)
+            true
+        } catch (_: Throwable) {
+            false
         }
     }
 
@@ -35,8 +33,28 @@ class DiagChannel(
         0L
     }
 
+    private fun rotateIfNeeded(incoming: Int) {
+        val len = file.length()
+        if (len + incoming <= maxBytes) return
+        // 单条就超过上限：轮转也留不下别的，直接追加（宁可超限也不丢这条）。
+        if (incoming >= maxBytes) return
+        if (!keepTail) {
+            file.writeText("")
+            return
+        }
+        val keep = (maxBytes / KEEP_DIVISOR).toInt().coerceAtLeast(1)
+        val tail = if (len > 0) file.readText().takeLast(keep) else ""
+        file.writeText(ROTATE_MARK + System.currentTimeMillis() + " ###\n" + tail)
+    }
+
     companion object {
-        /** 与 DebugTrace 原有阈值保持一致（debug-trace.log 单文件 1.5 MB）。 */
+        /** 单文件上限（沿用 debug-trace.log 的历史阈值）。 */
         const val DEFAULT_MAX_BYTES: Long = 1_500_000L
+
+        /** 超限后保留尾部 `1/KEEP_DIVISOR`。 */
+        const val KEEP_DIVISOR: Int = 4
+
+        /** 轮转标记行前缀。 */
+        const val ROTATE_MARK: String = "### rotated @"
     }
 }

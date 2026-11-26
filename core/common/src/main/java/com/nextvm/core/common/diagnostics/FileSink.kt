@@ -19,7 +19,9 @@ class FileSink(
 
     private val queue = LinkedBlockingQueue<String>()
     private val started = AtomicBoolean(false)
-    private val lock = Any()
+
+    // 落盘原语统一走 DiagChannel；checks.log 是结构化结果，保持「超限清空」语义。
+    private val channel = DiagChannel(file, maxBytes, keepTail = false)
 
     private fun ensureWorker() {
         if (!started.compareAndSet(false, true)) return
@@ -48,14 +50,8 @@ class FileSink(
 
     private fun writeLines(lines: List<String>) {
         if (lines.isEmpty()) return
-        synchronized(lock) {
-            try {
-                file.parentFile?.mkdirs()
-                if (file.length() > maxBytes) file.writeText("")
-                file.appendText(lines.joinToString(""))
-            } catch (_: Throwable) {
-            }
-        }
+        file.parentFile?.mkdirs()
+        channel.append(lines.joinToString(""))
     }
 
     override fun onCheck(result: CheckResult, seq: Int) {

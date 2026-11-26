@@ -25,6 +25,22 @@ object DiagFiles {
     fun webViewWarm(pid: Int): String = "webviewwarm-$pid.log"
     fun webViewWatch(pid: Int): String = "webviewwatch-$pid.log"
 
+    fun stateProbe(pid: Int): String = "stateprobe-$pid.log"
+    fun dexMem(pid: Int): String = "dexmem-$pid.log"
+    fun shortcutProbe(pid: Int): String = "shortcut-probe-$pid.log"
+    fun memDexDump(pid: Int, index: Int): String = "memdex-$pid-$index.dex"
+
+    fun v139Probe(): String = "v139-probe.log"
+    fun v144IntentProbe(): String = "v144-intent-probe.log"
+    fun v145IntentProbe(): String = "v145-intent-probe.log"
+    fun v148ConnectProbe(): String = "v148-connect-probe.log"
+
+    /** `v155-init` / `v156-load` / `v155-click` 这类过滤结果。 */
+    fun filtered(prefix: String): String = "$prefix-filtered.log"
+
+    /** API trace 原始文件（非 `.log`）。 */
+    fun trace(prefix: String, pid: Int): String = "$prefix-$pid-1.trace"
+
     /** 扫 `<filesDir>` 下所有诊断文件（按名字排序）。 */
     fun list(filesDir: File): List<File> = try {
         filesDir.listFiles()
