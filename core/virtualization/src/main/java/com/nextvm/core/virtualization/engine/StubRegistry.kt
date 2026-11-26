@@ -57,10 +57,15 @@ class StubRegistry {
         return available
     }
 
-    /** 该 slot/launchMode 的候选 stub（**只读**，不标记占用）。 */
+    /**
+     * 该 slot/launchMode 的**可用**候选 stub（不标记占用，但会过滤掉已占用的）。
+     *
+     * 必须过滤：不过滤时 `LaunchPlanner` 永远取到 `Standard00`，导致"启动新实例"复用同一组件
+     * → 同一 taskAffinity → 系统折叠回同一个 Task（实测：多次 New instance 仍只有 1 个 task）。
+     */
     fun candidatesFor(slot: Int, launchMode: String): List<String> {
         val mapping = slots[slot] ?: return emptyList()
-        return poolFor(mapping, launchMode)
+        return poolFor(mapping, launchMode).filter { it !in inUseStubs }
     }
 
     /** 把已选中的 stub 标记为占用（由 `LaunchPlanner` 决策后、真正启动前调用）。 */

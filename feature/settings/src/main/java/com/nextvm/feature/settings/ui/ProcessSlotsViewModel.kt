@@ -69,18 +69,18 @@ class ProcessSlotsViewModel @Inject constructor(
                 engine.cleanupTask(intent.taskId)
             }
             is Intent.CleanupSlot -> act("Closed tasks in slot ${intent.slot}") {
-                engine.cleanupSlot(intent.slot)
+                engine.cleanupSlot(intent.slot) > 0
             }
         }
     }
 
-    /** 执行一个引擎动作（IO 线程），然后重新拉一次快照。 */
-    private fun act(message: String, block: suspend () -> Any?) {
+    /** 执行一个引擎动作（IO 线程），然后重新拉一次快照；消息必须反映真实成败。 */
+    private fun act(message: String, block: suspend () -> Boolean) {
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) {
-                runCatching { block() }.isSuccess
+                runCatching { block() }.getOrDefault(false)
             }
-            if (ok) _effects.emit(Effect.ShowMessage(message))
+            _effects.emit(Effect.ShowMessage(if (ok) message else "No effect: $message"))
             refresh()
         }
     }

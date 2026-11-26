@@ -1127,14 +1127,25 @@ class VirtualEngine @Inject constructor(
         return targets.count { cleanupTask(it) }
     }
 
-    /** 把该实例当前会话的 task 带到前台（UI 的"进入"）；没有活会话返回 false。 */
+    /** 把该实例当前会话的 task 带到前台（UI 的"进入"）；返回是否真的成功。 */
     @Synchronized
     fun bringToFront(instanceId: String): Boolean {
-        val lease = slotLeases.byInstance(instanceId) ?: return false
+        val lease = slotLeases.byInstance(instanceId)
+        if (lease == null) {
+            DiagnosticsHolder.stage("slot", "bringToFront no-lease instance=$instanceId")
+            return false
+        }
         val st = slotStatus().firstOrNull {
             it.slot == lease.slot && it.instanceId == instanceId
         }
-        return bringTaskToFront(st?.taskId ?: 0)
+        val taskId = st?.taskId ?: 0
+        val ok = bringTaskToFront(taskId)
+        // UI 的"Bring to front"成败必须落盘：否则按钮只弹提示、看不出到底有没有生效
+        DiagnosticsHolder.stage(
+            "slot",
+            "bringToFront instance=$instanceId slot=${lease.slot} task=$taskId ok=$ok",
+        )
+        return ok
     }
 
     /**

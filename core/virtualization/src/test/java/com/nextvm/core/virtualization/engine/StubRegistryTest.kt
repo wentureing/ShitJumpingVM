@@ -186,4 +186,19 @@ class StubRegistryTest {
         registry.releaseAllStubsForSlot(-1)
         assertNotNull(registry.resolveStub(5, "standard"))
     }
+
+    @Test
+    fun `R4 candidatesFor 过滤已占用（否则新实例永远拿到同一个 stub）`() {
+        val all = registry.candidatesFor(0, "standard")
+        assertEquals(VirtualConstants.STUB_ACTIVITIES_STANDARD, all.size)
+
+        registry.markInUse(all.first())
+        val afterOne = registry.candidatesFor(0, "standard")
+        assertEquals(VirtualConstants.STUB_ACTIVITIES_STANDARD - 1, afterOne.size)
+        assertFalse("已占用的不能再当候选", afterOne.contains(all.first()))
+
+        // 全部占满 → 空列表（planner 会给出 No available stub）
+        all.forEach { registry.markInUse(it) }
+        assertTrue(registry.candidatesFor(0, "standard").isEmpty())
+    }
 }
