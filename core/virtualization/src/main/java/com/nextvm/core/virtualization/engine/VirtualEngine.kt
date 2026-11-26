@@ -40,7 +40,6 @@ import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
-import com.nextvm.core.common.diagnostics.DiagFiles
 import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.diagnostics.DiagnosticsHolder
 import com.nextvm.core.common.diagnostics.DiagnosticsRouter
