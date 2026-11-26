@@ -40,6 +40,8 @@ import com.nextvm.core.virtualization.lifecycle.startup.GuestBindBackgroundTasks
 import com.nextvm.core.virtualization.lifecycle.startup.ApplicationOnCreateInvoker
 import com.nextvm.core.virtualization.lifecycle.startup.ContentProviderInitializer
 import com.nextvm.core.virtualization.lifecycle.startup.GuestApplicationFactory
+import com.nextvm.core.virtualization.lifecycle.startup.GuestLoadedApkPathInjection
+import com.nextvm.core.virtualization.lifecycle.startup.PackerAttachFixes
 
 /**
  * VirtualApplicationManager — Manages guest app Application lifecycle.
@@ -908,192 +910,17 @@ class VirtualApplicationManager @Inject constructor(
         }
     }
 
-    /**
-     * FIX 2: Patch Jiagu/packer stub Application fields before attach.
-     *
-     * Packers like Jiagu (com.stub.StubApp) store native library extraction paths
-     * and data directory paths in static/instance String fields. In the virtual
-     * environment, these fields may be null because the packer's initialization
-     * code hasn't run yet, or the paths it computed are wrong. This causes the
-     * packer's attachBaseContext() to pass null/invalid paths to System.load().
-     *
-     * We scan the stub Application class for null String fields and set them to
-     * the guest app's nativeLibraryDir, which is the most commonly needed path.
-     */
-    private fun patchJiaguStubBeforeAttach(application: Application, virtualContext: Context) {
-        try {
-            val appClass = application.javaClass
-            val className = appClass.name
+    /** 壳（Jiagu/SecNeo）attach 前的字段修正；实现见 `startup/PackerAttachFixes.kt`。 */
+    private fun patchJiaguStubBeforeAttach(application: Application, virtualContext: Context) =
+        PackerAttachFixes.applyBeforeAttach(application, virtualContext)
 
-            // Only patch if it looks like a packer stub class
-            if (!className.contains("stub", ignoreCase = true) &&
-                !className.contains("jiagu", ignoreCase = true) &&
-                !className.contains("wrapper", ignoreCase = true) &&
-                !className.contains("Shell", ignoreCase = true) &&
-                !className.contains("Qihoo", ignoreCase = true)
-            ) {
-                return
-            }
+    /** Runtime.load0 的 caller 修正（线程 CL + ProtectionDomain）；实现见 `startup/PackerAttachFixes.kt`。 */
+    private fun installRuntimeLoadCallerFix(application: Application, virtualContext: Context) =
+        PackerAttachFixes.applyRuntimeLoadCallerFix(application, virtualContext)
 
-            Timber.tag(TAG).d("Detected packer stub class: $className — patching fields")
-
-            val nativeLibDir = virtualContext.applicationInfo?.nativeLibraryDir ?: return
-            val dataDir = virtualContext.applicationInfo?.dataDir ?: return
-            val sourceDir = virtualContext.applicationInfo?.sourceDir ?: return
-
-            // Patch instance fields
-            for (field in appClass.declaredFields) {
-                try {
-                    field.isAccessible = true
-                    if (field.type == String::class.java) {
-                        val value = field.get(application) as? String
-                        if (value == null) {
-                            // Null String field — likely a path that needs to be set
-                            field.set(application, nativeLibDir)
-                            Timber.tag(TAG).d("  Patched null field: ${field.name} → $nativeLibDir")
-                        } else if (value.contains("/data/data/") &&
-                            !value.contains("com.nextvm.app")
-                        ) {
-                            // Contains a real package data path — redirect to virtual sandbox
-                            val redirected = value.replace(
-                                Regex("/data/(data|user/0)/[^/]+"),
-                                dataDir
-                            )
-                            if (redirected != value) {
-                                field.set(application, redirected)
-                                Timber.tag(TAG).d("  Redirected field: ${field.name} → $redirected")
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Skip inaccessible fields
-                }
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "patchJiaguStubBeforeAttach failed (non-fatal)")
-        }
-    }
-
-    /**
-     * FIX 3: Install a caller-class fix for Runtime.load0 / Runtime.nativeLoad.
-     *
-     * When Jiagu calls Runtime.load0(Class<?> callerClass, String filename) via
-     * reflection, callerClass can be null in the virtual environment. The ART runtime's
-     * nativeLoad implementation uses the caller's ClassLoader to determine the linker
-     * namespace, and a null caller causes CheckJNI to abort when accessing the caller's
-     * protection domains array.
-     *
-     * This method:
-     * 1. Sets Thread contextClassLoader to the guest's ClassLoader
-     * 2. Ensures the guest Application class has a valid ProtectionDomain with
-     *    CodeSource pointing to the guest APK path
-     * 3. The actual JNI-level fix is in NativeHookBridge.hookRuntimeNativeLoad()
-     */
-    private fun installRuntimeLoadCallerFix(application: Application, virtualContext: Context) {
-        try {
-            // Ensure the current thread's contextClassLoader is the guest's ClassLoader.
-            val guestClassLoader = application.javaClass.classLoader
-            if (guestClassLoader != null) {
-                Thread.currentThread().contextClassLoader = guestClassLoader
-                Timber.tag(TAG).d("Set thread contextClassLoader to guest ClassLoader: ${guestClassLoader.javaClass.name}")
-            }
-
-            // Ensure the guest's Application class has a valid ProtectionDomain
-            // with a CodeSource pointing to the guest APK. This prevents NPE/SIGABRT
-            // when ART/CheckJNI tries to access the caller's ProtectionDomain array.
-            try {
-                val pd = application.javaClass.protectionDomain
-                if (pd == null || pd.codeSource == null) {
-                    // Inject a valid ProtectionDomain with CodeSource pointing to APK
-                    val apkPath = virtualContext.applicationInfo?.sourceDir
-                    if (apkPath != null) {
-                        val codeSource = java.security.CodeSource(
-                            java.io.File(apkPath).toURI().toURL(),
-                            arrayOfNulls<java.security.cert.Certificate>(0)
-                        )
-                        val newPd = java.security.ProtectionDomain(codeSource, null)
-                        // Set via reflection on the Class object
-                        val pdField = findField(Class::class.java, "protectionDomain")
-                            ?: findField(Class::class.java, "pd")
-                        if (pdField != null) {
-                            pdField.isAccessible = true
-                            pdField.set(application.javaClass, newPd)
-                            Timber.tag(TAG).d("Injected ProtectionDomain with CodeSource: $apkPath")
-                        }
-                    }
-                } else {
-                    Timber.tag(TAG).d("Guest Application ProtectionDomain already valid: $pd")
-                }
-            } catch (e: Exception) {
-                Timber.tag(TAG).d("ProtectionDomain fix: ${e.message} (non-fatal)")
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "installRuntimeLoadCallerFix failed (non-fatal)")
-        }
-    }
-
-    /**
-     * Inject guest app paths into the LoadedApk's ApplicationInfo.
-     *
-     * When Application.attach(context) is called, it sets:
-     *   mLoadedApk = ContextImpl.getImpl(context).mPackageInfo
-     *
-     * Since VirtualContext wraps the HOST ContextImpl, mPackageInfo is the HOST's
-     * LoadedApk with HOST paths. We patch its mApplicationInfo to have guest paths
-     * so that Runtime.nativeLoad() and other framework code finds the right
-     * nativeLibraryDir, sourceDir, and dataDir.
-     */
-    private fun injectGuestPathsIntoLoadedApk(virtualContext: Context) {
-        try {
-            // Walk the ContextWrapper chain to find the underlying ContextImpl
-            var ctx: Context = virtualContext
-            while (ctx is android.content.ContextWrapper) {
-                val base = ctx.baseContext ?: break
-                ctx = base
-            }
-
-            // Get mPackageInfo (LoadedApk) from ContextImpl
-            val mPackageInfoField = findField(ctx::class.java, "mPackageInfo")
-            mPackageInfoField?.isAccessible = true
-            val loadedApk = mPackageInfoField?.get(ctx) ?: run {
-                Timber.tag(TAG).w("Could not find mPackageInfo on ContextImpl")
-                return
-            }
-
-            // Get mApplicationInfo from LoadedApk
-            val appInfoField = findField(loadedApk::class.java, "mApplicationInfo")
-            appInfoField?.isAccessible = true
-            val loadedApkAppInfo = appInfoField?.get(loadedApk) as? ApplicationInfo ?: run {
-                Timber.tag(TAG).w("Could not find mApplicationInfo on LoadedApk")
-                return
-            }
-
-            // Read guest paths from VirtualContext.getApplicationInfo()
-            val guestAppInfo = virtualContext.applicationInfo
-
-            // Patch the LoadedApk's ApplicationInfo with guest paths
-            loadedApkAppInfo.nativeLibraryDir = guestAppInfo.nativeLibraryDir
-            loadedApkAppInfo.sourceDir = guestAppInfo.sourceDir
-            loadedApkAppInfo.publicSourceDir = guestAppInfo.sourceDir
-            loadedApkAppInfo.dataDir = guestAppInfo.dataDir
-
-            // CRITICAL: Also patch LoadedApk.mLibDir which is used by
-            // Runtime.nativeLoad() to construct the library search path.
-            // Without this, the linker namespace has wrong paths and .so loading fails.
-            val mLibDirField = findField(loadedApk::class.java, "mLibDir")
-            if (mLibDirField != null) {
-                mLibDirField.isAccessible = true
-                mLibDirField.set(loadedApk, guestAppInfo.nativeLibraryDir)
-                Timber.tag(TAG).d("Injected mLibDir into LoadedApk: ${guestAppInfo.nativeLibraryDir}")
-            }
-
-            Timber.tag(TAG).d(
-                "Injected guest paths into LoadedApk: nativeLibDir=${loadedApkAppInfo.nativeLibraryDir}"
-            )
-        } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "Failed to inject guest paths into LoadedApk (non-fatal)")
-        }
-    }
+    /** 把 guest 路径注入宿主 LoadedApk；实现见 `startup/GuestLoadedApkPathInjection.kt`。 */
+    private fun injectGuestPathsIntoLoadedApk(virtualContext: Context) =
+        GuestLoadedApkPathInjection.apply(virtualContext)
 
     /**
      * Patch LoadedApk.mApplication to point to the guest Application.
