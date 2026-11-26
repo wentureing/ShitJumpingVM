@@ -41,6 +41,19 @@ object DiagFiles {
     /** API trace 原始文件（非 `.log`）。 */
     fun trace(prefix: String, pid: Int): String = "$prefix-$pid-1.trace"
 
+    /**
+     * 给 C++ `is_container_diag_path` 下发的标记（不含前导 `/`）。
+     * 与 `check-diag-channels.mjs` 的契约：C++ 白名单 ⊆ 本列表。
+     */
+    fun markers(): Array<String> = arrayOf(
+        DEBUG_TRACE, CHECKS, SECCOMP_DIAG,
+        "breadcrumb-", "stackdump-", "hijacktrace-", "startactivity-trace-",
+        "webviewwarm-", "webviewwatch-", "stateprobe-", "dexmem-",
+        "shortcut-probe-", "memdex-",
+        "v139-probe.log", "v144-intent-probe.log", "v145-intent-probe.log",
+        "v148-connect-probe.log", "-filtered.log", "-1.trace",
+    )
+
     /** 扫 `<filesDir>` 下所有诊断文件（按名字排序）。 */
     fun list(filesDir: File): List<File> = try {
         filesDir.listFiles()

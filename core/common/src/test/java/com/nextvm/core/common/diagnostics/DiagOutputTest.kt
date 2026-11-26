@@ -102,4 +102,42 @@ class DiagOutputTest {
         assertTrue(DiagOutput.overwrite("maps.txt", "v2"))
         assertEquals("v2", File(dir, "maps.txt").readText())
     }
+
+    /** 契约（C++ 白名单下发用）：markers() 必须覆盖 DiagFiles 里所有通道名。 */
+    @Test
+    fun `O7 markers 覆盖全部通道名`() {
+        val markers = DiagFiles.markers()
+        val names = channelNames()
+        assertTrue("应至少有一个通道", names.isNotEmpty())
+        val missing = names.filter { n -> markers.none { mk -> n.contains(mk) } }
+        assertEquals("markers() 漏了这些通道，C++ 白名单下发会漏", emptyList<String>(), missing)
+    }
+
+    @Test
+    fun `O8 markers 无重复且非空`() {
+        val markers = DiagFiles.markers()
+        assertEquals("marker 不得重复", markers.size, markers.toSet().size)
+        assertTrue("marker 不得为空", markers.none { it.isBlank() })
+    }
+
+    /** 反射收集 `DiagFiles` 所有返回 String 的通道（const val + 无参/有参函数）。 */
+    private fun channelNames(): List<String> {
+        val out = mutableListOf<String>()
+        val cls = DiagFiles::class.java
+        for (f in cls.declaredFields) {
+            if (f.type != String::class.java) continue
+            f.isAccessible = true
+            (try { f.get(null) } catch (_: Throwable) { f.get(DiagFiles) } as? String)?.let { out.add(it) }
+        }
+        for (m in cls.declaredMethods) {
+            if (m.returnType != String::class.java) continue
+            if (m.name == "markers") continue
+            val args = m.parameterTypes.map { t ->
+                if (t == Int::class.javaPrimitiveType || t == Int::class.javaObjectType) 0 else "x"
+            }.toTypedArray()
+            m.isAccessible = true
+            (m.invoke(DiagFiles, *args) as? String)?.let { out.add(it) }
+        }
+        return out
+    }
 }
