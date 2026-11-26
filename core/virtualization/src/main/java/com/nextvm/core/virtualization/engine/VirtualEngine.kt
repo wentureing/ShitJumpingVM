@@ -1875,11 +1875,9 @@ class VirtualEngine @Inject constructor(
                     ) {
                         frameworkLoadedApks[instanceId]
                     } else {
-                        // 采 legacy 路径样本用：classloader 仍由 framework 建，只让 VAM 手工装配
-                        com.nextvm.core.common.DebugTrace.event(
-                            "flags", "frameworkBind=false -> legacy bind"
-                        )
-                        GuestBreadcrumb.log("frameworkBind=false (flag) — legacy bind")
+                        // 采 legacy 路径样本用：classloader 仍由 framework 建，只让 VAM 手工装配。
+                        // 不额外打点：路径事实由 bindApplication 的 `frameworkLoadedApk=` 表达，
+                        // 开关取值由 DebugFlags.snapshot() 落到 debug-trace.log。
                         null
                     }
                 )
