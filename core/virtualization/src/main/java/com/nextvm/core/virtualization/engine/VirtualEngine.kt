@@ -180,6 +180,7 @@ class VirtualEngine @Inject constructor(
             override fun nativeAvailable() = nativeHookBridge.isNativeAvailable()
             override fun ruleSnapshot() = nativeHookBridge.getPathRedirectSnapshot()
             override fun javaIoStats() = JavaIoHooks.stats()
+            override fun javaIoInstalled() = JavaIoHooks.installed
         }
         val checker = ContainerSelfCheck(
             paths = probe,
@@ -190,8 +191,12 @@ class VirtualEngine @Inject constructor(
         val checks = checker.run()
         val line = checker.report(checks)
         runCatching {
-            DiagChannel(java.io.File(context.filesDir, DiagFiles.CHECKS))
-                .append("S selfcheck $line\n")
+            val ch = DiagChannel(java.io.File(context.filesDir, DiagFiles.CHECKS))
+            ch.append("S selfcheck $line\n")
+            // 每项 detail 也落盘：否则 fail 了无法诊断（只有一行汇总看不出原因）
+            checks.forEach { c ->
+                ch.append("S selfcheck.${c.id} ${if (c.ok) "ok" else "FAIL"} ${c.detail}\n")
+            }
         }
         return line
     }

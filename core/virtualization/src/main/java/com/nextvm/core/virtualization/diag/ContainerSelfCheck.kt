@@ -17,6 +17,8 @@ internal interface PathProbe {
     fun ruleSnapshot(): Map<String, String>
     /** Java 层 I/O 统计原文（S8 用；未安装 hook 时为 null）。 */
     fun javaIoStats(): String?
+    /** Java 层 I/O hook 是否已安装（未安装时 stats 恒为 0，不能据此判定）。 */
+    fun javaIoInstalled(): Boolean
 }
 
 internal class ContainerSelfCheck(
@@ -123,8 +125,12 @@ internal class ContainerSelfCheck(
      * S1/S2 用的是自造临时规则，只能证明机制可用；真实违规（规则没注册/注册错进程）它是全绿的。
      */
     private fun realRuleSample(): Check = guard("S7", "真实规则抽样", {
-        val sample = paths.ruleSnapshot().entries.firstOrNull()
-            ?: return@guard Check("S7", "真实规则抽样", false, "规则表为空（guest 未注册？）")
+        val snapshot = paths.ruleSnapshot()
+        if (snapshot.isEmpty()) {
+            // 规则在 guest 进程注册（v142 的教训），主进程冷启动时本来就没有 → 不是失败
+            return@guard Check("S7", "真实规则抽样", true, "skipped(no guest rules in this process)")
+        }
+        val sample = snapshot.entries.first()
         val from = sample.key
         val to = sample.value
         val probe = if (from.endsWith("/")) from + PROBE_NAME else "$from/" + PROBE_NAME
@@ -134,7 +140,7 @@ internal class ContainerSelfCheck(
             "S7",
             "真实规则抽样",
             ok,
-            "rules=${paths.redirectionCount()} from=$from got=$got",
+            "rules=${snapshot.size} from=$from got=$got",
         )
     })
 
@@ -146,8 +152,12 @@ internal class ContainerSelfCheck(
     private fun diagWriteNotCounted(): Check {
         val f = diagFile
             ?: return Check("S8", "诊断写入不计入 total", true, "skipped(no diag file)")
+        if (!paths.javaIoInstalled()) {
+            // 未安装时 stats 恒为 0（不是 null），不能据此判定 → 记 skipped
+            return Check("S8", "诊断写入不计入 total", true, "skipped(javaIo hook not installed)")
+        }
         val before = parseIoStats(paths.javaIoStats())
-            ?: return Check("S8", "诊断写入不计入 total", true, "skipped(no javaIo hook)")
+            ?: return Check("S8", "诊断写入不计入 total", false, "stats 读取失败（hook 已装但读不到）")
         repeat(WRITE_ROUNDS) { runCatching { f.appendText("selfcheck s8\n") } }
         val after = parseIoStats(paths.javaIoStats())
             ?: return Check("S8", "诊断写入不计入 total", false, "stats 读取失败")

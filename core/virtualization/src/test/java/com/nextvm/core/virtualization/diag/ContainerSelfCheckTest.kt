@@ -28,6 +28,7 @@ class ContainerSelfCheckTest {
         /** S8 用：第一次调用返回 before，之后返回 after（模拟"写诊断前/后"两次采样）。 */
         var statsBefore: String? = null
         var statsAfter: String? = null
+        var javaIoHookInstalled = false
         private var statsCalls = 0
 
         override fun add(fromPrefix: String, toPrefix: String) { rules[fromPrefix] = toPrefix }
@@ -42,6 +43,7 @@ class ContainerSelfCheckTest {
         override fun nativeAvailable() = true
         override fun ruleSnapshot(): Map<String, String> = rules.toMap()
         override fun javaIoStats(): String? = if (statsCalls++ == 0) statsBefore else statsAfter
+        override fun javaIoInstalled(): Boolean = javaIoHookInstalled
     }
 
     private fun check(id: String, checks: List<ContainerSelfCheck.Check>) =
@@ -114,10 +116,12 @@ class ContainerSelfCheckTest {
     }
 
     @Test
-    fun `C8 S7 真实规则抽样：有规则则 ok，空表则 fail`() {
+    fun `C8 S7 空规则表记 skipped，有规则则必须能往返`() {
         val probe = FakeProbe()
+        // 规则在 guest 进程注册（v142）；主进程冷启动时为空 → skipped，不是 fail
         val empty = ContainerSelfCheck(probe, tmp.root, "[豁免名单]\n", null).run()
-        assertFalse("规则表为空必须判失败（否则真实规则没注册也全绿）", check("S7", empty).ok)
+        assertTrue(check("S7", empty).ok)
+        assertTrue(check("S7", empty).detail.contains("skipped"))
 
         probe.rules["/data/user/0/com.a/"] = "/sandbox/a/"
         val ok = ContainerSelfCheck(probe, tmp.root, "[豁免名单]\n", null).run()
@@ -132,13 +136,17 @@ class ContainerSelfCheckTest {
     fun `C9 S8 诊断写入只增 diag 不增 total`() {
         val diag = File(tmp.root, "debug-trace.log")
 
-        // a) 未安装 javaIo hook：skipped 而不是 fail
-        val skipped = ContainerSelfCheck(FakeProbe(), tmp.root, "[豁免名单]\n", diag).run()
-        assertTrue(check("S8", skipped).ok)
-        assertTrue(check("S8", skipped).detail.contains("skipped"))
+        // a) 未安装 javaIo hook：skipped 而不是 fail（未装时 stats 恒为 0）
+        val skipped = FakeProbe().apply { javaIoHookInstalled = false }
+        assertTrue(check("S8", ContainerSelfCheck(skipped, tmp.root, "[豁免名单]\n", diag).run()).ok)
+        assertTrue(
+            check("S8", ContainerSelfCheck(FakeProbe(), tmp.root, "[豁免名单]\n", diag).run())
+                .detail.contains("skipped")
+        )
 
-        // b) diag 增 3、total 不变 -> ok
+        // b) 已安装，diag 增 3、total 不变 -> ok
         val good = FakeProbe().apply {
+            javaIoHookInstalled = true
             statsBefore = "total=10 fail=0 translated=0 translate=1 diag=5"
             statsAfter = "total=10 fail=0 translated=0 translate=1 diag=8"
         }
@@ -146,6 +154,7 @@ class ContainerSelfCheckTest {
 
         // c) total 也被计入 -> fail（日志自身污染指标）
         val bad = FakeProbe().apply {
+            javaIoHookInstalled = true
             statsBefore = "total=10 fail=0 translated=0 translate=1 diag=5"
             statsAfter = "total=16 fail=0 translated=0 translate=1 diag=8"
         }
