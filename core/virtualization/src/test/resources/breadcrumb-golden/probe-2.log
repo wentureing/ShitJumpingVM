@@ -1,0 +1,41 @@
+breadcrumb begin pkg=com.sandbox.probe pid=<PID> wall=<WALL>
+replaceClassLoader enter pkg=com.sandbox.probe instance=com.sandbox.probe_<TS>
+createFrameworkLoadedApk call pkg=com.sandbox.probe appInfo.packageName=com.sandbox.probe appInfo.className=com.sandbox.probe.ProbeApplication appInfo.sourceDir=/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_<TS>.apk
+createFrameworkLoadedApk result loadedApk=#<ID> mPackageName=com.sandbox.probe ai.packageName=com.sandbox.probe ai.sourceDir=/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_<TS>.apk mApplication=null mPackages[guest]=#<ID> mPackages[host]=#<ID>
+replaceClassLoader host=#<ID> guestCL=#<ID>
+replaceClassLoader done pkg=com.sandbox.probe target=#<ID> mPackages[guest]=#<ID> mPackages[host]=#<ID>
+v79 probe target=com.sandbox.probe.ProbeActivity clone=#<ID> mResources(before)=#<ID> zipOpen=ok entries=<N> getResources()=THREW NoSuchMethodException: android.app.LoadedApk.getResources [class android.app.ActivityThread] mResources(after)=#<ID>
+v118-provider-fields idx=0 name=com.sandbox.probe.ProbeProvider authority=com.sandbox.probe.probe initOrder=1000 exported=false enabled=true multiprocess=false readPermission=null writePermission=null process=com.sandbox.probe
+v81 watch start path=/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_<TS>.apk exists=true len=<N> guard=false
+breadcrumb begin (already active, kept) pkg=com.sandbox.probe
+bind start instance=com.sandbox.probe_<TS> appClass=com.sandbox.probe.ProbeApplication providers=1 frameworkLoadedApk=true
+framework makeApplication enter
+framework bind identity loadedApk=#<ID> mPackageName=com.nextvm.app ai.packageName=com.sandbox.probe ai.sourceDir=/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_<TS>.apk mApplication=null
+v53 probe cl=dalvik.system.PathClassLoader[DexPathList[[zip file "/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_<TS>.apk"],nativeLibraryDirectories=[/data/user/0/com.nextvm.app/files/virtual/data/com.sandbox.probe_<TS>/lib, /system/lib64, /system_ext/lib64]]]
+v53 probe findLibrary(DexHelper)=null
+instr newApplication com.sandbox.probe.ProbeApplication clId=<CLID>
+framework makeApplication exit app=com.sandbox.probe.ProbeApplication
+providers begin n=1 list=com.sandbox.probe.ProbeProvider
+provider attachInfo enter com.sandbox.probe.ProbeProvider
+provider ok com.sandbox.probe.ProbeProvider authority=com.sandbox.probe.probe
+Application.onCreate enter com.sandbox.probe.ProbeApplication
+Application.onCreate exit ok
+v116-plugin-probe PluginManagerProvider registered=false (contentProviders=1)
+v116-plugin-probe PluginLoader class not found: ClassNotFoundException
+v138-appctx mInitialApplication com.nextvm.app -> com.nextvm.app ; mBoundApplication.appContext failed: NoSuchFieldException
+v142-redirect registered rules=<N> appDir=/data/user/0/com.nextvm.app/files/virtual/data/com.sandbox.probe_<TS> sdcard=/data/user/0/com.nextvm.app/files/virtual/data/com.sandbox.probe_<TS>/sdcard
+v143-datadir pkg=com.sandbox.probe appInfo /data/user/0/com.nextvm.app/files/virtual/data/com.sandbox.probe_<TS> -> /data/user/0/com.sandbox.probe ; mDataDir -> /data/user/0/com.sandbox.probe
+guest diagnostics installed
+v130-watchdog started
+engine breadcrumb callbacks registered on com.sandbox.probe.ProbeApplication
+bind complete (framework path)
+instr newActivity com.sandbox.probe.ProbeActivity
+instr callActivityOnCreate enter com.sandbox.probe.ProbeActivity
+preCreate enter com.sandbox.probe.ProbeActivity
+cb onActivityCreated com.sandbox.probe.ProbeActivity
+v129-autofill disabled com.sandbox.probe.ProbeActivity
+v118-plugin-probe phase=firstActivity PluginManagerProvider registered=false (contentProviders=1)
+v118-plugin-probe phase=firstActivity PluginLoader class not found: ClassNotFoundException
+instr callActivityOnCreate exit ok com.sandbox.probe.ProbeActivity
+cb onActivityStarted com.sandbox.probe.ProbeActivity
+cb onActivityResumed com.sandbox.probe.ProbeActivity

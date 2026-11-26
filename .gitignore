@@ -30,6 +30,8 @@ proguard/
 # Log Files
 *.log
 log.txt
+# 例外：启动链 golden 是测试资源的正体（不是运行日志），必须入库
+!core/virtualization/src/test/resources/breadcrumb-golden/*.log
 
 # Android Studio Navigation editor temp files
 .navigation/
