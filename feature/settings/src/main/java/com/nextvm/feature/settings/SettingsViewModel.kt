@@ -9,8 +9,8 @@ import com.nextvm.core.model.EngineStatus
 import com.nextvm.core.services.gms.VirtualAccountManager
 import com.nextvm.core.services.gms.VirtualGoogleSignInManager
 import com.nextvm.core.virtualization.engine.VirtualEngine
-import com.nextvm.core.virtualization.process.SlotState
 import com.nextvm.core.virtualization.process.SlotStatus
+import com.nextvm.core.virtualization.process.SlotUsage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -124,12 +124,8 @@ class SettingsViewModel @Inject constructor(
                         },
                         installedAppCount = apps.size,
                         slots = slots,
-                        // "占用的 slot" = 有进程占着（RUNNING 或 ORPHAN）；同一 slot 只算一次。
-                        // ORPHAN 也是真实在跑的进程，不能漏计，否则会和列表页对不上。
-                        usedSlots = slots
-                            .filter { s -> s.state == SlotState.RUNNING || s.state == SlotState.ORPHAN }
-                            .distinctBy { s -> s.slot }
-                            .size
+                        // 占用口径唯一来源：RUNNING + ORPHAN，同一 slot 只算一次（见 SlotUsage）
+                        usedSlots = SlotUsage.countInUse(slots)
                     )
                 }
             } catch (e: Exception) {

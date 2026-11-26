@@ -94,4 +94,23 @@ class SlotLeaseRegistryTest {
         assertNull(registry.byInstance("inst-a"))
         assertNull(registry.bySlot(1))
     }
+
+    @Test
+    fun `L8 release 后可以按新的 slot 与 stub 重新登记`() {
+        registry.acquire(1, "inst-a", "stub-a", nowMs = 1L)
+        registry.release("inst-a")
+
+        val again = registry.acquire(2, "inst-a", "stub-a2", nowMs = 9L)
+        assertEquals(2, again.slot)
+        assertEquals("stub-a2", again.stubClassName)
+        assertEquals(9L, again.acquiredAtMs)
+        assertEquals(2, registry.bySlot(2)?.slot)
+        assertNull("旧 slot 不应残留", registry.bySlot(1))
+    }
+
+    @Test
+    fun `L9 noteTaskId 对不存在的实例返回 null 且不建租约`() {
+        assertNull(registry.noteTaskId("ghost", 123))
+        assertEquals(0, registry.all().size)
+    }
 }

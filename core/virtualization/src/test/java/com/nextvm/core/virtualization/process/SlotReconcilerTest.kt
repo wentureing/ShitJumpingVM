@@ -248,4 +248,46 @@ class SlotReconcilerTest {
         assertEquals("5 次点击仍只有 1 个孤儿（按 slot/进程计），task 数单独给出", 5, st.taskCount)
         assertEquals(1, plan.orphans.size)
     }
+
+    @Test
+    fun `S15 无 task 的孤儿 taskCount 为 0`() {
+        val plan = SlotReconciler.reconcile(
+            leases = emptyList(),
+            procs = listOf(proc(2, 55)),
+            tasks = emptyList(),
+        )
+        assertEquals(0, plan.statuses.single().taskCount)
+    }
+
+    @Test
+    fun `S16 RUNNING 与 STALE 也带 taskCount`() {
+        val running = SlotReconciler.reconcile(
+            leases = listOf(lease(1, "a")),
+            procs = listOf(proc(1, 10)),
+            tasks = listOf(task(1, 1, "a"), task(2, 1, "a")),
+        ).statuses.single()
+        assertEquals(2, running.taskCount)
+
+        val stale = SlotReconciler.reconcile(
+            leases = listOf(lease(2, "b")),
+            procs = emptyList(),
+            tasks = listOf(task(3, 2, "b")),
+        ).statuses.single()
+        assertEquals(1, stale.taskCount)
+    }
+
+    @Test
+    fun `S17 空 task 也计入 taskCount（它是残留）`() {
+        val plan = SlotReconciler.reconcile(
+            leases = emptyList(),
+            procs = listOf(proc(1, 7)),
+            tasks = listOf(
+                task(11, 1, null, numActivities = 0),
+                task(12, 1, null, numActivities = 3),
+            ),
+        )
+        val st = plan.statuses.single()
+        assertEquals(2, st.taskCount)
+        assertEquals("判定用的仍是第一个有 Activity 的 task", 12, st.taskId)
+    }
 }

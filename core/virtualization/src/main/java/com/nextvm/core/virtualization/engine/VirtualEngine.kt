@@ -37,9 +37,10 @@ import com.nextvm.core.virtualization.lifecycle.VirtualConfigurationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualResourceManager
 import com.nextvm.core.virtualization.process.VirtualMultiProcessManager
 import com.nextvm.core.virtualization.process.RecordSnapshot
+import com.nextvm.core.virtualization.process.SessionDecision
+import com.nextvm.core.virtualization.process.SessionReusePolicy
 import com.nextvm.core.virtualization.process.SlotLeaseRegistry
 import com.nextvm.core.virtualization.process.SlotReconciler
-import com.nextvm.core.virtualization.process.SlotState
 import com.nextvm.core.virtualization.process.SlotStatus
 import com.nextvm.core.virtualization.process.SlotStatusProbe
 import com.nextvm.core.virtualization.ui.VirtualWindowManager
@@ -635,33 +636,42 @@ class VirtualEngine @Inject constructor(
 
             // 2. 会话复用（Step 2）：有活会话就切前台，不消耗 stub、不新建 Task
             var reusedStub: String? = null
-            if (DebugFlags.isOn(DebugFlags.SESSION_REUSE, true)) {
-                val lease = slotLeases.byInstance(instanceId)
-                if (lease != null) {
-                    val st = slotStatus().firstOrNull {
-                        it.slot == lease.slot && it.instanceId == instanceId
-                    }
-                    if (st != null && st.taskId > 0) slotLeases.noteTaskId(instanceId, st.taskId)
-                    val alive = st?.state == SlotState.RUNNING
-                    if (st != null && alive && st.taskId > 0 && bringTaskToFront(st.taskId)) {
-                        DiagnosticsHolder.stage(
-                            "slot",
-                            "reuse bringToFront instance=$instanceId slot=${lease.slot} task=${st.taskId}",
-                        )
-                        runningApps[instanceId] = app.processSlot
-                        updateAppState(instanceId) {
-                            it.copy(isRunning = true, lastLaunchedAt = System.currentTimeMillis())
+            val lease = slotLeases.byInstance(instanceId)
+            if (lease != null) {
+                val st = slotStatus().firstOrNull {
+                    it.slot == lease.slot && it.instanceId == instanceId
+                }
+                if (st != null && st.taskId > 0) slotLeases.noteTaskId(instanceId, st.taskId)
+                val decision = SessionReusePolicy.decide(
+                    enabled = DebugFlags.isOn(DebugFlags.SESSION_REUSE, true),
+                    lease = lease,
+                    status = st,
+                )
+                when (decision) {
+                    SessionDecision.BRING_TO_FRONT -> {
+                        if (st != null && bringTaskToFront(st.taskId)) {
+                            DiagnosticsHolder.stage(
+                                "slot",
+                                "reuse bringToFront instance=$instanceId slot=${lease.slot} task=${st.taskId}",
+                            )
+                            runningApps[instanceId] = app.processSlot
+                            updateAppState(instanceId) {
+                                it.copy(isRunning = true, lastLaunchedAt = System.currentTimeMillis())
+                            }
+                            Timber.tag(TAG).i(
+                                "Reused live session: ${app.appName} (slot=${lease.slot} task=${st.taskId})"
+                            )
+                            return VmResult.Success(Unit)
                         }
-                        Timber.tag(TAG).i(
-                            "Reused live session: ${app.appName} (slot=${lease.slot} task=${st.taskId})"
-                        )
-                        return VmResult.Success(Unit)
+                        // 切前台失败（ROM 限制 / task 已消失）：沿用原 stub 重开界面
+                        reusedStub = lease.stubClassName
                     }
-                    when {
-                        // 进程还在但没界面（Activity 全 finish）：沿用原 stub 重开，仍不新起进程
-                        alive -> reusedStub = lease.stubClassName
-                        // 进程已不在：不复用死会话，走新分配（清理留给 Step 3）
-                        else -> slotLeases.release(instanceId)
+                    // 进程在但没界面（Activity 全 finish）：沿用原 stub，仍不新起进程
+                    SessionDecision.REUSE_STUB -> reusedStub = lease.stubClassName
+                    SessionDecision.NEW_SESSION -> {
+                        if (SessionReusePolicy.shouldDropLease(decision, st)) {
+                            slotLeases.release(instanceId)
+                        }
                     }
                 }
             }
