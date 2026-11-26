@@ -111,7 +111,7 @@ class SettingsViewModel @Inject constructor(
                 val status = engine.getEngineStatus()
                 // 槽位真值来自系统（:pN 进程 + 容器 task），不是"安装表里的 isRunning 标志"
                 val slots = withContext(Dispatchers.IO) {
-                    runCatching { engine.slotStatus() }.getOrElse { emptyList() }
+                    runCatching { engine.slotStatus(force = true) }.getOrElse { emptyList() }
                 }
 
                 _uiState.update {
@@ -124,7 +124,12 @@ class SettingsViewModel @Inject constructor(
                         },
                         installedAppCount = apps.size,
                         slots = slots,
-                        usedSlots = slots.count { s -> s.state == SlotState.RUNNING }
+                        // "占用的 slot" = 有进程占着（RUNNING 或 ORPHAN）；同一 slot 只算一次。
+                        // ORPHAN 也是真实在跑的进程，不能漏计，否则会和列表页对不上。
+                        usedSlots = slots
+                            .filter { s -> s.state == SlotState.RUNNING || s.state == SlotState.ORPHAN }
+                            .distinctBy { s -> s.slot }
+                            .size
                     )
                 }
             } catch (e: Exception) {

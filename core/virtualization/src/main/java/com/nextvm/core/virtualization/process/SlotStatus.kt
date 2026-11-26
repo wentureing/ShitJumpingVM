@@ -32,6 +32,8 @@ data class SlotStatus(
     val taskId: Int = 0,
     val topComponent: String? = null,
     val note: String = "",
+    /** 该 slot 在系统里残留的 task 总数（同一 slot 多次点击会产生多个）。 */
+    val taskCount: Int = 0,
 )
 
 /** 系统侧进程快照（`com.nextvm.app:pN` → slot + pid）。 */

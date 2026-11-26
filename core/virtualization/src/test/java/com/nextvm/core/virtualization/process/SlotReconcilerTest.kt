@@ -227,4 +227,25 @@ class SlotReconcilerTest {
         assertEquals(101, st.taskId)
         assertEquals("com.nextvm.app.stub.P1\$Standard01", st.topComponent)
     }
+
+    @Test
+    fun `S14 同 slot 多次点击时 ORPHAN 只算一行并带 taskCount`() {
+        // 现象：同一 guest 点 5 次 → 1 个 :p1 进程 + 多个 task（每个 stub 独立 affinity）
+        val plan = SlotReconciler.reconcile(
+            leases = emptyList(),
+            procs = listOf(proc(1, 900)),
+            tasks = listOf(
+                task(201, 1, null),
+                task(202, 1, null),
+                task(203, 1, null),
+                task(204, 1, null),
+                task(205, 1, null),
+            ),
+        )
+        val st = plan.statuses.single()
+        assertEquals(SlotState.ORPHAN, st.state)
+        assertEquals(900, st.pid)
+        assertEquals("5 次点击仍只有 1 个孤儿（按 slot/进程计），task 数单独给出", 5, st.taskCount)
+        assertEquals(1, plan.orphans.size)
+    }
 }

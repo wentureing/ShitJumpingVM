@@ -133,6 +133,7 @@ private fun SlotRow(status: SlotStatus) {
                 text = buildString {
                     append("pid ").append(if (status.pid > 0) status.pid else "—")
                     append(" · task ").append(if (status.taskId > 0) status.taskId else "—")
+                    if (status.taskCount > 0) append(" (").append(status.taskCount).append(" tasks)")
                     if (status.topComponent != null) append(" · ").append(status.topComponent)
                     if (status.note.isNotEmpty()) append("  (").append(status.note).append(")")
                 },

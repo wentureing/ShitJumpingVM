@@ -48,7 +48,7 @@ class ProcessSlotsViewModel @Inject constructor(
     private fun refresh() {
         viewModelScope.launch {
             val slots = withContext(Dispatchers.IO) {
-                runCatching { engine.slotStatus() }.getOrElse { emptyList() }
+                runCatching { engine.slotStatus(force = true) }.getOrElse { emptyList() }
             }
             _uiState.value = UiState(isLoading = false, slots = slots)
         }

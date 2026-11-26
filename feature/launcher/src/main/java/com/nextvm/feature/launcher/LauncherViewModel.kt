@@ -10,6 +10,7 @@ import com.nextvm.core.model.VirtualApp
 import com.nextvm.core.model.VmResult
 import com.nextvm.core.virtualization.engine.VirtualEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -138,7 +140,12 @@ class LauncherViewModel @Inject constructor(
     private fun launchApp(app: VirtualApp) {
         viewModelScope.launch {
             Timber.tag("LauncherVM").d("Launching ${app.packageName}")
-            when (val result = engine.launchApp(app.instanceId)) {
+            // 引擎的 launchApp 会做 ActivityManager 探测 + startActivity（binder），不能占主线程
+            val result = withContext(Dispatchers.IO) {
+                runCatching { engine.launchApp(app.instanceId) }
+                    .getOrElse { VmResult.Error("Launch threw: ${it.javaClass.simpleName}: ${it.message}") }
+            }
+            when (result) {
                 is VmResult.Success -> {
                     _effects.emit(LauncherEffect.AppLaunched(app.appName))
                     // No manual refresh needed — StateFlow auto-updates running state

@@ -112,6 +112,9 @@ class VirtualEngine @Inject constructor(
 ) {
     companion object {
         private const val TAG = "VirtualEngine"
+
+        /** slotStatus() 缓存窗口：连续点击/多页同时刷新时避免重复 binder 探测。 */
+        private const val SLOT_STATUS_TTL_MS = 250L
     }
 
     // Engine state
@@ -142,6 +145,10 @@ class VirtualEngine @Inject constructor(
 
     // 会话租约：instanceId -> slot/stub（Step 0a 只登记不使用；Step 2 起接管复用）
     private val slotLeases = SlotLeaseRegistry()
+
+    // slotStatus() 的短 TTL 缓存（见 SLOT_STATUS_TTL_MS）
+    private var lastSlotStatus: List<SlotStatus> = emptyList()
+    private var lastSlotStatusAtMs = 0L
 
     // Thread-safety lock for initialization
     private val initLock = Any()
@@ -960,12 +967,16 @@ class VirtualEngine @Inject constructor(
      * 只读：当前各 process slot 的真实状态（不回收、不归还、不启动任何东西）。
      *
      * 事实来自系统（`:pN` 进程 + 容器自己的 task）与租约表；任何异常都退化为空表。
+     * [force]=false 时 250ms 内复用上次结果（连续点击不重复 binder 探测，避免 UI 卡顿）。
      */
-    fun slotStatus(): List<SlotStatus> {
+    @Synchronized
+    fun slotStatus(force: Boolean = false): List<SlotStatus> {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastSlotStatusAtMs < SLOT_STATUS_TTL_MS) return lastSlotStatus
         val records = runningApps.keys.mapNotNull { id ->
             findApp(id)?.let { RecordSnapshot(id, it.packageName) }
         }
-        return runCatching {
+        val result = runCatching {
             val (procs, tasks) = SlotStatusProbe.snapshot(context)
             SlotReconciler.reconcile(
                 leases = slotLeases.all(),
@@ -980,6 +991,9 @@ class VirtualEngine @Inject constructor(
             DebugTrace.fail("slot", msg)
             emptyList()
         }
+        lastSlotStatus = result
+        lastSlotStatusAtMs = now
+        return result
     }
 
     /** 把该 task 带到前台；失败返回 false（调用方回退到"重新 startActivity"）。 */
