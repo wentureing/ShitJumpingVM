@@ -22,6 +22,13 @@ enum class SlotState {
     CONFLICT,
 }
 
+/** 一条系统 task（UI 展开到"逐个 task 关闭"用）。 */
+data class TaskRef(
+    val taskId: Int,
+    val numActivities: Int,
+    val topComponent: String? = null,
+)
+
 /** 一行 slot 状态（UI 直接渲染，不含任何 Android 对象）。 */
 data class SlotStatus(
     val slot: Int,
@@ -34,6 +41,8 @@ data class SlotStatus(
     val note: String = "",
     /** 该 slot 在系统里残留的 task 总数（同一 slot 多次点击会产生多个）。 */
     val taskCount: Int = 0,
+    /** 该 slot 的 task 明细（按 taskId 升序；清理必须逐个，不能按包名批量）。 */
+    val tasks: List<TaskRef> = emptyList(),
 )
 
 /** 系统侧进程快照（`com.nextvm.app:pN` → slot + pid）。 */

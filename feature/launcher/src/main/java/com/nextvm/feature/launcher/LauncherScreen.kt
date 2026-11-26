@@ -155,7 +155,7 @@ fun LauncherScreen(
                     items = uiState.launcherItems,
                     onVirtualAppClick = { viewModel.onIntent(LauncherIntent.LaunchApp(it)) },
                     onVirtualAppLongClick = { viewModel.onIntent(LauncherIntent.ShowAppOptions(it)) },
-                    onUninstall = { viewModel.onIntent(LauncherIntent.UninstallApp(it)) },
+                    onLaunchNewInstance = { viewModel.onIntent(LauncherIntent.LaunchNewInstance(it)) },
                     onSystemAppClick = { viewModel.onIntent(LauncherIntent.LaunchSystemApp(it.route)) }
                 )
             }
@@ -169,7 +169,7 @@ private fun LauncherGrid(
     items: List<LauncherItem>,
     onVirtualAppClick: (VirtualApp) -> Unit,
     onVirtualAppLongClick: (VirtualApp) -> Unit,
-    onUninstall: (VirtualApp) -> Unit,
+    onLaunchNewInstance: (VirtualApp) -> Unit,
     onSystemAppClick: (SystemApp) -> Unit
 ) {
     LazyVerticalGrid(
@@ -201,7 +201,7 @@ private fun LauncherGrid(
                         app = item.app,
                         onClick = { onVirtualAppClick(item.app) },
                         onLongClick = { onVirtualAppLongClick(item.app) },
-                        onUninstall = { onUninstall(item.app) }
+                        onLaunchNewInstance = { onLaunchNewInstance(item.app) }
                     )
                     is LauncherItem.System -> SystemAppGridItem(
                         systemApp = item.systemApp,
@@ -280,7 +280,7 @@ private fun AppGridItem(
     app: VirtualApp,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onUninstall: () -> Unit
+    onLaunchNewInstance: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -368,10 +368,10 @@ private fun AppGridItem(
                 onDismissRequest = { showMenu = false }
             ) {
                 DropdownMenuItem(
-                    text = { Text("Uninstall") },
+                    text = { Text("New instance") },
                     onClick = {
                         showMenu = false
-                        onUninstall()
+                        onLaunchNewInstance()
                     }
                 )
             }
@@ -601,3 +601,4 @@ private fun InitializingScreen(status: EngineStatus) {
         }
     }
 }
+

@@ -1,5 +1,6 @@
 package com.nextvm.feature.settings.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,12 +21,19 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,11 +43,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nextvm.core.virtualization.process.SlotState
 import com.nextvm.core.virtualization.process.SlotStatus
+import com.nextvm.core.virtualization.process.TaskRef
 
 /**
- * Process Slots 列表：只渲染 [ProcessSlotsViewModel.UiState] 并转发刷新请求。
+ * Process Slots 列表：只渲染 [ProcessSlotsViewModel.UiState] 并转发动作请求。
  *
- * 说明：docs/输出/变更/20261127-process-slots-会话复用与UI解绑.md §3.3
+ * 清理粒度是 **task**（不按包名批量），见变更文档 §3.3。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,9 +57,18 @@ fun ProcessSlotsScreen(
     viewModel: ProcessSlotsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    var expandedSlot by remember { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(Unit) {
+        viewModel.effects.collect { effect ->
+            snackbarHostState.showSnackbar(effect.message, duration = SnackbarDuration.Short)
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Process Slots", style = MaterialTheme.typography.titleLarge) },
@@ -80,7 +98,7 @@ fun ProcessSlotsScreen(
         ) {
             Text(
                 text = if (uiState.isLoading) "Reading slots..." else
-                    "${uiState.slots.size} slot(s) in use · read-only preview",
+                    "${uiState.slots.size} slot(s) in use · tap a row to see its tasks",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -100,7 +118,24 @@ fun ProcessSlotsScreen(
                     items = uiState.slots,
                     key = { "${it.slot}-${it.instanceId ?: "none"}-${it.state.name}" }
                 ) { status ->
-                    SlotRow(status)
+                    SlotRow(
+                        status = status,
+                        expanded = expandedSlot == status.slot,
+                        onToggle = {
+                            expandedSlot = if (expandedSlot == status.slot) null else status.slot
+                        },
+                        onBringToFront = {
+                            viewModel.onIntent(
+                                ProcessSlotsViewModel.Intent.BringToFront(status.instanceId)
+                            )
+                        },
+                        onCleanupSlot = {
+                            viewModel.onIntent(ProcessSlotsViewModel.Intent.CleanupSlot(status.slot))
+                        },
+                        onCleanupTask = { taskId ->
+                            viewModel.onIntent(ProcessSlotsViewModel.Intent.CleanupTask(taskId))
+                        }
+                    )
                 }
             }
         }
@@ -108,8 +143,19 @@ fun ProcessSlotsScreen(
 }
 
 @Composable
-private fun SlotRow(status: SlotStatus) {
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+private fun SlotRow(
+    status: SlotStatus,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onBringToFront: () -> Unit,
+    onCleanupSlot: () -> Unit,
+    onCleanupTask: (Int) -> Unit,
+) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle() }
+    ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -145,12 +191,46 @@ private fun SlotRow(status: SlotStatus) {
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(top = 8.dp)
             ) {
-                // Step 4 才接线：本步只读，按钮故意 disabled
-                OutlinedButton(onClick = {}, enabled = false) { Text("Bring to front") }
+                OutlinedButton(
+                    onClick = onBringToFront,
+                    enabled = status.state == SlotState.RUNNING && status.taskId > 0
+                ) { Text("Bring to front") }
                 Spacer(modifier = Modifier.width(8.dp))
-                OutlinedButton(onClick = {}, enabled = false) { Text("Clean up") }
+                OutlinedButton(
+                    onClick = onCleanupSlot,
+                    enabled = status.tasks.isNotEmpty()
+                ) { Text("Close all tasks") }
+            }
+            if (expanded && status.tasks.isNotEmpty()) {
+                Text(
+                    text = "Tasks (close one by one; process stays alive)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+                status.tasks.forEach { task ->
+                    TaskRow(task = task, onClose = { onCleanupTask(task.taskId) })
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun TaskRow(task: TaskRef, onClose: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+    ) {
+        Text(
+            text = "task ${task.taskId} · ${task.numActivities} act" +
+                (task.topComponent?.let { " · $it" } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f)
+        )
+        TextButton(onClick = onClose) { Text("Close") }
     }
 }
 

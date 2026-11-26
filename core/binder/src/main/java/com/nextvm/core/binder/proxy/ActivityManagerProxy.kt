@@ -1064,6 +1064,10 @@ class ActivityManagerProxy(
             // change nothing.
             try {
                 val myPid = android.os.Process.myPid()
+                // 设计意图（2026-11-27）：guest 进程名就是 guest 包名（与 setArgV0/kernel comm 一致）。
+                // AMS 记录里本进程仍带 stub 身份（com.nextvm.app:pN），这是 guest 唯一能看到
+                // stub 名字的通道 → 在透传前把"本进程条目"改写掉，与其它名字通道对齐。
+                val guestPkg = findCallingGuestPkg()
                 val sb = StringBuilder("call own=")
                 var found = false
                 for (e in processList) {
@@ -1071,6 +1075,10 @@ class ActivityManagerProxy(
                         ?: continue
                     if (info.pid == myPid) {
                         found = true
+                        if (!guestPkg.isNullOrEmpty()) {
+                            info.processName = guestPkg
+                            info.pkgList = arrayOf(guestPkg)
+                        }
                         sb.append("{pid=").append(info.pid)
                             .append(" name=").append(info.processName)
                             .append(" pkgs=").append(info.pkgList?.joinToString(","))

@@ -42,6 +42,8 @@ sealed class LauncherIntent {
     data class LaunchApp(val app: VirtualApp) : LauncherIntent()
     data class LaunchSystemApp(val route: String) : LauncherIntent()
     data class ShowAppOptions(val app: VirtualApp) : LauncherIntent()
+    /** 长按菜单：强制开新会话（新 stub → 新 Task），用于同一 guest 多窗口。 */
+    data class LaunchNewInstance(val app: VirtualApp) : LauncherIntent()
     data class UninstallApp(val app: VirtualApp) : LauncherIntent()
 }
 
@@ -109,6 +111,7 @@ class LauncherViewModel @Inject constructor(
             is LauncherIntent.LaunchApp -> launchApp(intent.app)
             is LauncherIntent.LaunchSystemApp -> launchSystemApp(intent.route)
             is LauncherIntent.ShowAppOptions -> showAppOptions(intent.app)
+            is LauncherIntent.LaunchNewInstance -> launchNewInstance(intent.app)
             is LauncherIntent.UninstallApp -> uninstallApp(intent.app)
         }
     }
@@ -153,6 +156,24 @@ class LauncherViewModel @Inject constructor(
                 is VmResult.Error -> {
                     Timber.tag("LauncherVM").e(result.exception, "Launch failed: ${result.message}")
                     _effects.emit(LauncherEffect.ShowError("Failed to launch: ${result.message}"))
+                }
+                is VmResult.Loading -> { /* no-op */ }
+            }
+        }
+    }
+
+    /** 长按菜单：强制新会话（同一 guest 再开一个窗口，不影响已有会话的 task）。 */
+    private fun launchNewInstance(app: VirtualApp) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { engine.launchApp(app.instanceId, forceNewSession = true) }
+                    .getOrElse { VmResult.Error("Launch threw: ${it.javaClass.simpleName}: ${it.message}") }
+            }
+            when (result) {
+                is VmResult.Success -> _effects.emit(LauncherEffect.AppLaunched(app.appName))
+                is VmResult.Error -> {
+                    Timber.tag("LauncherVM").e(result.exception, "New instance failed: ${result.message}")
+                    _effects.emit(LauncherEffect.ShowError("Failed to open new instance: ${result.message}"))
                 }
                 is VmResult.Loading -> { /* no-op */ }
             }

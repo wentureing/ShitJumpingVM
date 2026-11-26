@@ -290,4 +290,34 @@ class SlotReconcilerTest {
         assertEquals(2, st.taskCount)
         assertEquals("判定用的仍是第一个有 Activity 的 task", 12, st.taskId)
     }
+
+    @Test
+    fun `S18 task 明细按 taskId 升序给出`() {
+        val plan = SlotReconciler.reconcile(
+            leases = emptyList(),
+            procs = listOf(proc(1, 8)),
+            tasks = listOf(
+                task(205, 1, null, top = "P1\$Standard04"),
+                task(201, 1, null, top = "P1\$Standard00"),
+                task(203, 1, null, top = "P1\$Standard02"),
+            ),
+        )
+        val st = plan.statuses.single()
+        assertEquals(listOf(201, 203, 205), st.tasks.map { it.taskId })
+        assertEquals("P1\$Standard00", st.tasks.first().topComponent)
+        assertEquals(3, st.taskCount)
+    }
+
+    @Test
+    fun `S19 不同 slot 的 task 不混在一起`() {
+        val plan = SlotReconciler.reconcile(
+            leases = emptyList(),
+            procs = listOf(proc(1, 11), proc(2, 22)),
+            tasks = listOf(task(301, 1, null), task(302, 2, null), task(303, 2, null)),
+        )
+        val p1 = plan.statuses.first { it.slot == 1 }
+        val p2 = plan.statuses.first { it.slot == 2 }
+        assertEquals(listOf(301), p1.tasks.map { it.taskId })
+        assertEquals(listOf(302, 303), p2.tasks.map { it.taskId })
+    }
 }

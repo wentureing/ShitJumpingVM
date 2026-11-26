@@ -617,8 +617,14 @@ class VirtualEngine @Inject constructor(
 
     /**
      * Launch a virtual app by its instance ID.
+     *
+     * [forceNewSession]=true 时跳过"复用已有会话"，强制分配新 stub → 新 Task（"启动新实例"用）。
      */
-    fun launchApp(instanceId: String, activityName: String? = null): VmResult<Unit> {
+    fun launchApp(
+        instanceId: String,
+        activityName: String? = null,
+        forceNewSession: Boolean = false,
+    ): VmResult<Unit> {
         ensureInitialized()
 
         val app = findApp(instanceId)
@@ -627,6 +633,9 @@ class VirtualEngine @Inject constructor(
         Timber.tag(TAG).i("Launching: ${app.appName} (${app.instanceId})")
 
         try {
+            // 0. 先回收 STALE（进程已不在的会话），避免死租约占着 slot、挡住新会话
+            runCatching { reconcileSlots() }
+
             // 1. Find main activity (from VPMS, the real service)
             // activityName 优先（命令行 LAUNCH_ACTIVITY 用）；否则回退到 LAUNCHER。
             // 容器在启动 guest 时只解析 LAUNCHER 组件，因此「启动任意 Activity」
@@ -637,7 +646,9 @@ class VirtualEngine @Inject constructor(
                 ?: return VmResult.Error("No main activity found for ${app.packageName}")
 
             // 2. 取会话事实（租约 + 该实例在该 slot 上的真实状态）
-            val lease = slotLeases.byInstance(instanceId)
+            // forceNewSession：故意不传租约 → planner 必走 NEW_SESSION（新 stub → 新 Task），
+            // 但也不会释放既有租约（dropLease 需 lease 非空）。
+            val lease = if (forceNewSession) null else slotLeases.byInstance(instanceId)
             val leaseStatus = if (lease != null) {
                 slotStatus().firstOrNull { it.slot == lease.slot && it.instanceId == instanceId }
             } else {
@@ -1042,6 +1053,88 @@ class VirtualEngine @Inject constructor(
             )
             false
         }
+    }
+
+    /**
+     * 自动回收 STALE（有租约、进程已不在）：释放租约/stub/记录，**不杀进程、不动 task**。
+     *
+     * @return 回收的会话数。
+     */
+    @Synchronized
+    fun reconcileSlots(): Int {
+        val plan = runCatching {
+            val records = runningApps.keys.mapNotNull { id ->
+                findApp(id)?.let { RecordSnapshot(id, it.packageName) }
+            }
+            val (procs, tasks) = SlotStatusProbe.snapshot(context)
+            SlotReconciler.reconcile(
+                leases = slotLeases.all(),
+                procs = procs,
+                tasks = tasks,
+                records = records,
+            )
+        }.getOrElse { t ->
+            DiagnosticsHolder.error("slot", "reconcileSlots failed: " + t.javaClass.simpleName, t)
+            return 0
+        }
+        if (plan.releaseLeases.isEmpty() && plan.releaseStubsForSlots.isEmpty()) return 0
+        for (lease in plan.releaseLeases) {
+            slotLeases.release(lease.instanceId)
+            runningApps.remove(lease.instanceId)
+            updateAppState(lease.instanceId) { it.copy(isRunning = false) }
+        }
+        for (slot in plan.releaseStubsForSlots) {
+            if (::stubRegistry.isInitialized && runningApps.values.none { it == slot }) {
+                stubRegistry.releaseAllStubsForSlot(slot)
+            }
+        }
+        DiagnosticsHolder.stage(
+            "slot",
+            "reclaimed stale leases=${plan.releaseLeases.size} stubs=${plan.releaseStubsForSlots}",
+        )
+        return plan.releaseLeases.size
+    }
+
+    /** 关闭单个 task：只清这一个，不杀进程、不影响同 guest 的其它 task。 */
+    fun cleanupTask(taskId: Int): Boolean {
+        if (taskId <= 0) return false
+        return runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                ?: return@runCatching false
+            val task = am.appTasks.firstOrNull { it.taskInfo.taskId == taskId }
+                ?: return@runCatching false
+            task.finishAndRemoveTask()
+            DiagnosticsHolder.stage("slot", "closed task=$taskId")
+            true
+        }.getOrElse { t ->
+            DiagnosticsHolder.error(
+                "slot",
+                "cleanupTask failed task=$taskId: " + t.javaClass.simpleName,
+                t,
+            )
+            false
+        }
+    }
+
+    /** 关闭该 slot 下的全部 task（逐个清；**不杀进程**）。返回关闭数量。 */
+    @Synchronized
+    fun cleanupSlot(slot: Int): Int {
+        val targets = slotStatus(force = true)
+            .firstOrNull { it.slot == slot }
+            ?.tasks
+            ?.map { it.taskId }
+            ?: return 0
+        return targets.count { cleanupTask(it) }
+    }
+
+    /** 把该实例当前会话的 task 带到前台（UI 的"进入"）；没有活会话返回 false。 */
+    @Synchronized
+    fun bringToFront(instanceId: String): Boolean {
+        val lease = slotLeases.byInstance(instanceId) ?: return false
+        val st = slotStatus().firstOrNull {
+            it.slot == lease.slot && it.instanceId == instanceId
+        }
+        return bringTaskToFront(st?.taskId ?: 0)
     }
 
     /**

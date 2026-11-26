@@ -60,10 +60,14 @@ object SlotReconciler {
 
         // 每个 slot 的残留 task 数（同一 slot 多点几次就会多几个 task；ORPHAN 展示要用）
         val taskCountBySlot = HashMap<Int, Int>()
+        val taskRefsBySlot = HashMap<Int, MutableList<TaskRef>>()
         for (t in tasks) {
             val slot = t.slot ?: continue
             taskCountBySlot[slot] = (taskCountBySlot[slot] ?: 0) + 1
+            taskRefsBySlot.getOrPut(slot) { ArrayList() }
+                .add(TaskRef(t.taskId, t.numActivities, t.topComponent))
         }
+        for (refs in taskRefsBySlot.values) refs.sortBy { it.taskId }
 
         val statuses = ArrayList<SlotStatus>()
         val releaseLeases = ArrayList<SlotLease>()
@@ -86,6 +90,7 @@ object SlotReconciler {
                         topComponent = task?.topComponent,
                         note = "orphan: process without lease",
                         taskCount = taskCountBySlot[slot] ?: 0,
+                        tasks = taskRefsBySlot[slot] ?: emptyList(),
                     )
                     statuses += orphan
                     orphans += orphan
@@ -103,6 +108,7 @@ object SlotReconciler {
                     pid = proc?.pid ?: 0,
                     note = "conflict: preempted by " + current.instanceId,
                     taskCount = taskCountBySlot[slot] ?: 0,
+                    tasks = taskRefsBySlot[slot] ?: emptyList(),
                 )
             }
 
@@ -118,6 +124,7 @@ object SlotReconciler {
                         packageName = pkgOf[current.instanceId],
                         note = "stale: no process",
                         taskCount = taskCountBySlot[slot] ?: 0,
+                        tasks = taskRefsBySlot[slot] ?: emptyList(),
                     )
                     releaseLeases += current
                     releaseSlots += slot
@@ -135,6 +142,7 @@ object SlotReconciler {
                         topComponent = task?.topComponent,
                         note = "conflict: task belongs to " + taskOwner,
                         taskCount = taskCountBySlot[slot] ?: 0,
+                        tasks = taskRefsBySlot[slot] ?: emptyList(),
                     )
                 }
 
@@ -149,6 +157,7 @@ object SlotReconciler {
                         topComponent = task?.topComponent,
                         note = if (task == null) "no-task" else "",
                         taskCount = taskCountBySlot[slot] ?: 0,
+                        tasks = taskRefsBySlot[slot] ?: emptyList(),
                     )
                 }
             }
@@ -163,3 +172,4 @@ object SlotReconciler {
         )
     }
 }
+
