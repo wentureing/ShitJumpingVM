@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToProcessSlots: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -93,11 +94,13 @@ fun SettingsScreen(
                     value = uiState.engineStatus
                 )
                 SettingsDivider()
-                InfoRow(
-                    icon = Icons.Default.Storage,
-                    title = "Process Slots",
-                    value = "${uiState.usedSlots} / ${uiState.totalSlots} in use"
-                )
+                Box(modifier = Modifier.clickable { onNavigateToProcessSlots() }) {
+                    InfoRow(
+                        icon = Icons.Default.Storage,
+                        title = "Process Slots",
+                        value = "${uiState.usedSlots} / ${uiState.totalSlots} in use"
+                    )
+                }
                 SettingsDivider()
                 InfoRow(
                     icon = Icons.Default.PhoneAndroid,

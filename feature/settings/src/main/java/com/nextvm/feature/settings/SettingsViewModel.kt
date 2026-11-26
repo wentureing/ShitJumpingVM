@@ -9,8 +9,11 @@ import com.nextvm.core.model.EngineStatus
 import com.nextvm.core.services.gms.VirtualAccountManager
 import com.nextvm.core.services.gms.VirtualGoogleSignInManager
 import com.nextvm.core.virtualization.engine.VirtualEngine
+import com.nextvm.core.virtualization.process.SlotState
+import com.nextvm.core.virtualization.process.SlotStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -19,6 +22,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -36,6 +40,7 @@ data class SettingsUiState(
     val engineStatus: String = "Unknown",
     val usedSlots: Int = 0,
     val totalSlots: Int = 10,
+    val slots: List<SlotStatus> = emptyList(),
     val installedAppCount: Int = 0,
     val fileIsolationEnabled: Boolean = true,
     val permissionFirewallEnabled: Boolean = false,
@@ -49,6 +54,7 @@ sealed class SettingsIntent {
     data object ToggleVerboseLogging : SettingsIntent()
     data object ClearAllData : SettingsIntent()
     data object Refresh : SettingsIntent()
+    data object RefreshSlots : SettingsIntent()
     data object RefreshAccounts : SettingsIntent()
     data object StartAddAccount : SettingsIntent()
     data class RemoveGlobalAccount(val email: String) : SettingsIntent()
@@ -91,6 +97,7 @@ class SettingsViewModel @Inject constructor(
             is SettingsIntent.ToggleVerboseLogging -> toggleVerboseLogging()
             is SettingsIntent.ClearAllData -> clearAllData()
             is SettingsIntent.Refresh -> loadSettings()
+            is SettingsIntent.RefreshSlots -> loadSettings()
             is SettingsIntent.RefreshAccounts -> loadAccounts()
             is SettingsIntent.StartAddAccount -> startAddAccount()
             is SettingsIntent.RemoveGlobalAccount -> removeGlobalAccount(intent.email)
@@ -102,6 +109,10 @@ class SettingsViewModel @Inject constructor(
             try {
                 val apps = engine.getInstalledApps()
                 val status = engine.getEngineStatus()
+                // 槽位真值来自系统（:pN 进程 + 容器 task），不是"安装表里的 isRunning 标志"
+                val slots = withContext(Dispatchers.IO) {
+                    runCatching { engine.slotStatus() }.getOrElse { emptyList() }
+                }
 
                 _uiState.update {
                     it.copy(
@@ -112,7 +123,8 @@ class SettingsViewModel @Inject constructor(
                             EngineStatus.NOT_INITIALIZED -> "Not Started"
                         },
                         installedAppCount = apps.size,
-                        usedSlots = apps.count { app -> app.isRunning }
+                        slots = slots,
+                        usedSlots = slots.count { s -> s.state == SlotState.RUNNING }
                     )
                 }
             } catch (e: Exception) {

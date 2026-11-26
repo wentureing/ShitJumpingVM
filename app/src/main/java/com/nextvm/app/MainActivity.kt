@@ -32,6 +32,7 @@ import com.nextvm.feature.appmanager.AppManagerScreen
 import com.nextvm.feature.filemanager.FileManagerScreen
 import com.nextvm.feature.launcher.LauncherScreen
 import com.nextvm.feature.settings.SettingsScreen
+import com.nextvm.feature.settings.ui.ProcessSlotsScreen
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -142,6 +143,12 @@ fun NextVmApp() {
             }
             composable("settings") {
                 SettingsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToProcessSlots = { navController.navigate("settings/process_slots") }
+                )
+            }
+            composable("settings/process_slots") {
+                ProcessSlotsScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
