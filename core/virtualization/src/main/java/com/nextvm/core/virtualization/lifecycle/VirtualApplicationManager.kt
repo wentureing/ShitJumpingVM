@@ -34,6 +34,8 @@ import com.nextvm.core.virtualization.diag.trace.HijackTrace
 import com.nextvm.core.virtualization.engine.LifecycleRecorder
 import com.nextvm.core.virtualization.lifecycle.startup.ActivityThreadApplicationPatch
 import com.nextvm.core.virtualization.lifecycle.startup.ApplicationInfoFactory
+import com.nextvm.core.virtualization.lifecycle.startup.GuestDiagnosticsRegistration
+import com.nextvm.core.virtualization.lifecycle.startup.LoadedApkApplicationPatch
 import com.nextvm.core.virtualization.lifecycle.startup.GuestBindBackgroundTasks
 import com.nextvm.core.virtualization.lifecycle.startup.ApplicationOnCreateInvoker
 import com.nextvm.core.virtualization.lifecycle.startup.ContentProviderInitializer
@@ -63,24 +65,6 @@ import com.nextvm.core.virtualization.lifecycle.startup.GuestApplicationFactory
  *   6. Call Application.onCreate()
  */
 @Singleton
-/**
- * v148: drain the native failed-connect / failed-DNS ring and append
- * new events to v148-connect-probe.log in the guest files dir.
- * File-private top-level so both the VAM timer and the nested
- * V134ClickWrapper can call it. Runs outside any native hook body,
- * so file I/O here is safe. No-op when there are no new events.
- */
-private fun dumpV148ConnectProbe() {
-    try {
-        val ev = NativeHookBridge.dumpConnectProbe()
-        if (ev.isNullOrEmpty()) return
-        if (GuestBreadcrumb.filesDir() == null) return
-        DiagOutput.append(DiagFiles.v148ConnectProbe(), ev)
-    } catch (_: Throwable) {
-    }
-}
-
-
 class VirtualApplicationManager @Inject constructor(
     private val resourceManager: VirtualResourceManager,
     private val nativeHookBridge: com.nextvm.core.hook.NativeHookBridge,
@@ -124,8 +108,6 @@ class VirtualApplicationManager @Inject constructor(
     }
 
     // instanceId -> ApplicationRecord
-    private var guestDiagnosticsInstalled = false
-
     private val applications = ConcurrentHashMap<String, ApplicationRecord>()
 
     /**
@@ -356,143 +338,16 @@ class VirtualApplicationManager @Inject constructor(
     }
 
 
-    private fun registerBreadcrumbCallbacks(app: Application) {
-        // ===== guest 侧诊断（sandboxsensor）=====
-        // guest 进程用的是 guest 自己的 Application（如 mark.via.BrowserApp），
-        // NextVmApplication.onCreate 在这里不执行 -> 必须在 bind 路径上装。
-        // 路径用 guest 的 filesDir（已被 VirtualContext 重定向到沙箱）。
-        runCatching {
-            if (!guestDiagnosticsInstalled) {
-                guestDiagnosticsInstalled = true
-                com.nextvm.core.common.diagnostics.DiagnosticsHolder.install(
-                    com.nextvm.core.common.diagnostics.DiagnosticsRouter(
-                        listOf(
-                            com.nextvm.core.common.diagnostics.FileSink(
-                                java.io.File(app.filesDir, "checks.log")
-                            )
-                        )
-                    )
-                )
-                LifecycleRecorder.install(app)
-                GuestBreadcrumb.log("guest diagnostics installed")
-                // Holder 就绪后再 dump —— 规则注册(71ms)早于 Holder install(78ms)，
-                // 在 setupAppRedirections 里 dump 会被 NoOp 静默丢弃。
-                runCatching { nativeHookBridge.dumpFsStats("bind:" + app.packageName) }
-            }
-        }.onFailure {
-            GuestBreadcrumb.log("guest diagnostics install failed: " + it.message)
-        }
-        startWatchdog()
-        try {
-            app.registerActivityLifecycleCallbacks(
-                object : Application.ActivityLifecycleCallbacks {
-                    // v118: first Activity only, once per process.
-                    private var firstActivityProbed = false
-                    override fun onActivityCreated(
-                        a: android.app.Activity, b: android.os.Bundle?
-                    ) {
-                        GuestBreadcrumb.log("cb onActivityCreated " + a.javaClass.name)
-                        AutofillSuppressor.disableForActivity(a)
-                        if (!firstActivityProbed) {
-                            firstActivityProbed = true
-                            val rec = applications.values.firstOrNull {
-                                it.application === app
-                            }
-                            PluginProbes.probePluginStatePhase(app, rec, "firstActivity")
-                        }
-                    }
-
-                    override fun onActivityStarted(a: android.app.Activity) =
-                        GuestBreadcrumb.log("cb onActivityStarted " + a.javaClass.name)
-
-                    override fun onActivityResumed(a: android.app.Activity) {
-                        GuestBreadcrumb.log("cb onActivityResumed " + a.javaClass.name)
-                        // 自检请求：**仅 debug 包**、每进程一次（CmdReceiver SELF_CHECK --es instance 写入）
-                        if (!guestSelfCheckDone && com.nextvm.core.common.DebugFlags.isDebugBuild()) {
-                            guestSelfCheckDone = true
-                            runCatching {
-                                val dir = a.applicationContext?.filesDir ?: return@runCatching
-                                if (SelfCheckRequest.consume(dir)) {
-                                    GuestSelfCheck.run(nativeHookBridge, a.application)
-                                }
-                            }
-                        }
-                        // v156: trace the login page's load window.
-                        // First resume of LoginActivity, once per
-                        // process. The init trace never covers this
-                        // window (9626's init table has no
-                        // LoginActivity at all — buffer filled in
-                        // the Application burst).
-                        if (a.javaClass.name ==
-                            "com.cmccit.loginmodule.ac.LoginActivity"
-                        ) {
-                            InitTrace.startLoad()
-                        }
-                        // v124: every resume re-checks the login button
-                        // (fragment tab switches do not resume a new
-                        // Activity, so the timer below covers those).
-                        loginProbeLastActivity = a
-                        LoginProbes.probeLoginButtonState(a, "resumed")
-                        AutofillSuppressor.disableForActivity(a)
-                        AutofillSuppressor.disablePerView(a)
-                        LoginProbes.wrapFaceVerifyButton(a) { dumpV148ConnectProbe() }
-                        LoginProbes.probeAuthIntentPhone(a)
-                        LoginProbes.probeAuthIntentPhone145(a)
-                    }
-
-                    override fun onActivityPaused(a: android.app.Activity) =
-                        GuestBreadcrumb.log("cb onActivityPaused " + a.javaClass.name)
-
-                    override fun onActivityStopped(a: android.app.Activity) =
-                        GuestBreadcrumb.log("cb onActivityStopped " + a.javaClass.name)
-
-                    override fun onActivitySaveInstanceState(
-                        a: android.app.Activity, b: android.os.Bundle
-                    ) = GuestBreadcrumb.log("cb onActivitySaveInstanceState " + a.javaClass.name)
-
-                    override fun onActivityDestroyed(a: android.app.Activity) =
-                        GuestBreadcrumb.log("cb onActivityDestroyed " + a.javaClass.name)
-                })
-            GuestBreadcrumb.log("engine breadcrumb callbacks registered on " + app.javaClass.name)
-            // v124: repeating login-button check on the main looper.
-            // Tab switches inside one Activity never resume a new
-            // Activity, so resume alone cannot see the 我的 tab's
-            // button appearing later. v155: the 20s timer missed
-            // the user's few-seconds visit to the 我的 tab, so the
-            // timer is 5s for 10 minutes now (120 runs) — a full
-            // hierarchy walk is milliseconds, and the breadcrumb
-            // only logs on signature change, so the finer tick
-            // costs no log spam. Read-only hierarchy walk, main
-            // thread only.
-            if (!loginProbeTimerStarted) {
-                loginProbeTimerStarted = true
-                val handler = android.os.Handler(
-                    android.os.Looper.getMainLooper()
-                )
-                var runs = 0
-                val r = object : Runnable {
-                    override fun run() {
-                        try {
-                            loginProbeLastActivity?.let {
-                                LoginProbes.probeLoginButtonState(it, "timer")
-                                AutofillSuppressor.disablePerView(it)
-                                LoginProbes.wrapFaceVerifyButton(it) { dumpV148ConnectProbe() }
-                                LoginProbes.probeAuthIntentPhone(it)
-                                LoginProbes.probeAuthIntentPhone145(it)
-                                dumpV148ConnectProbe()
-                            }
-                        } catch (_: Throwable) {
-                        }
-                        runs++
-                        if (runs < 120) handler.postDelayed(this, 5_000L)
-                    }
-                }
-                handler.postDelayed(r, 5_000L)
-            }
-        } catch (e: Throwable) {
-            GuestBreadcrumb.logThrowable("register breadcrumb callbacks FAILED", e)
-        }
-    }
+    /** 诊断装配与生命周期回调的细节见 `startup/GuestDiagnosticsRegistration.kt`。 */
+    private fun registerBreadcrumbCallbacks(app: Application) =
+        GuestDiagnosticsRegistration.install(
+            app = app,
+            nativeHookBridge = nativeHookBridge,
+            startWatchdog = { startWatchdog() },
+            existingRecord = { target ->
+                applications.values.firstOrNull { it.application === target }
+            },
+        )
 
     /** 栈转储的调度与节奏见 `diag/dump/GuestStackDumps.kt`。 */
     private fun scheduleGuestStackDumps(packageName: String) =
@@ -1249,36 +1104,9 @@ class VirtualApplicationManager @Inject constructor(
      * instead of the guest Application — causing Hilt/Dagger cast failures and GMS
      * identity mismatches.
      */
-    private fun patchLoadedApkApplication(virtualContext: Context, guestApplication: Application) {
-        try {
-            // Walk the ContextWrapper chain to find the underlying ContextImpl
-            var ctx: Context = virtualContext
-            while (ctx is android.content.ContextWrapper) {
-                val base = ctx.baseContext ?: break
-                ctx = base
-            }
-
-            // Get mPackageInfo (LoadedApk) from ContextImpl
-            val mPackageInfoField = findField(ctx::class.java, "mPackageInfo")
-            mPackageInfoField?.isAccessible = true
-            val loadedApk = mPackageInfoField?.get(ctx) ?: run {
-                Timber.tag(TAG).w("Could not find mPackageInfo for mApplication patch")
-                return
-            }
-
-            // Patch LoadedApk.mApplication
-            val mApplicationField = findField(loadedApk::class.java, "mApplication")
-            if (mApplicationField != null) {
-                mApplicationField.isAccessible = true
-                mApplicationField.set(loadedApk, guestApplication)
-                Timber.tag(TAG).d("Patched LoadedApk.mApplication to guest Application")
-            } else {
-                Timber.tag(TAG).w("Could not find mApplication field on LoadedApk")
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "Failed to patch LoadedApk.mApplication (non-fatal)")
-        }
-    }
+    /** LoadedApk.mApplication 补丁的实现见 `startup/LoadedApkApplicationPatch.kt`。 */
+    private fun patchLoadedApkApplication(virtualContext: Context, guestApplication: Application) =
+        LoadedApkApplicationPatch.apply(virtualContext, guestApplication)
 
     /**
      * Initialize ContentProviders before Application.onCreate().
@@ -1321,12 +1149,6 @@ class VirtualApplicationManager @Inject constructor(
      *   Instrumentation.callApplicationOnCreate(app) in ActivityThread.handleBindApplication()
      */
 
-
-    @Volatile private var loginProbeLastActivity: android.app.Activity? = null
-    @Volatile private var loginProbeTimerStarted = false
-
-    /** guest 自检：每进程只消费一次请求（debug 包才有意义）。 */
-    @Volatile private var guestSelfCheckDone = false
 
     // v130-watchdog: main-looper stall sampler state.
     private var watchdogStarted = false
