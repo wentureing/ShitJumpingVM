@@ -1,15 +1,9 @@
 #include "path_rules.h"
 
+#include "path_pattern.h"
+
 namespace nextvm {
 namespace path {
-
-namespace {
-
-bool starts_with(const std::string& s, const std::string& prefix) {
-    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
-}
-
-}  // namespace
 
 std::string trim_trailing_slashes(const std::string& s) {
     std::string out = s;
@@ -31,16 +25,14 @@ std::string redirect_path(const RuleTable& rules, const std::string& path) {
     bool best_is_root = false;
 
     for (const auto& kv : rules) {
-        const std::string& from = kv.first;
-        const bool is_prefix = starts_with(path, from);
-        const bool is_root = !is_prefix && !from.empty() && from.back() == '/' &&
-                             from.size() == path.size() + 1 &&
-                             from.compare(0, path.size(), path) == 0;
-        if (!is_prefix && !is_root) continue;
-        const std::size_t len = is_root ? path.size() : from.size();
+        const PathPattern pat = parse_pattern(kv.first);
+        if (!pattern_matches(pat, path)) continue;
+        const bool is_root = pattern_is_root_form(pat, path);
+        const std::size_t len = is_root ? path.size() : pat.text.size();
         if (!(len > best_len || (len == best_len && best_is_root && !is_root))) continue;
         best_len = len;
-        best_from = is_prefix ? from : path;
+        // 只有"非根形态的前缀规则"才做路径拼接；Exact/Glob/根形态都是整路径替换。
+        best_from = (is_root || pat.kind != PatternKind::Prefix) ? path : pat.text;
         best_to = is_root ? trim_trailing_slashes(kv.second) : kv.second;
         best_is_root = is_root;
     }

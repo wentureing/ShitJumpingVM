@@ -26,6 +26,8 @@
 
 // 纯逻辑（无 Android/JNI 依赖）：可被 host 侧 g++ 单测编译，见 docs/架构/架构-C++测试夹具设计.md
 #include "core/path_rules.h"
+// 诊断白名单（由 core/common/src/main/resources/diag_channels.tsv 生成，勿手改）
+#include "core/diag_channels.inc"
 #include <android/log.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -7140,15 +7142,18 @@ static jlong hooked_java_linux_opendir(JNIEnv* env, jclass, jstring path) {
  * 真正想看的 guest 文件访问反而看不到 —— 实测过：整页都是
  * `JavaIo open: .../debug-trace.log (flags=0x441)`。
  */
-static bool is_container_diag_path(const std::string& p) {
-    static const char* kMarkers[] = {
-        "/debug-trace.log", "/checks.log", "/breadcrumb-",
-        "/stackdump-", "/webviewwarm-", "/webviewwatch-",
-    };
-    for (const char* m : kMarkers) {
-        if (p.find(m) != std::string::npos) return true;
+static bool marker_list_hit(const std::string& p, const char* const* arr, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        const char* m = arr[i];
+        if (m != nullptr && p.find(m) != std::string::npos) return true;
     }
     return false;
+}
+
+static bool is_container_diag_path(const std::string& p) {
+    return marker_list_hit(p, kDiagMarkersShared, sizeof(kDiagMarkersShared) / sizeof(kDiagMarkersShared[0])) ||
+           marker_list_hit(p, kDiagMarkersKotlinOnly, sizeof(kDiagMarkersKotlinOnly) / sizeof(kDiagMarkersKotlinOnly[0])) ||
+           marker_list_hit(p, kDiagMarkersCppOnly, sizeof(kDiagMarkersCppOnly) / sizeof(kDiagMarkersCppOnly[0]));
 }
 
 static jstring ufs_get_path(JNIEnv* env, jobject file) {

@@ -109,14 +109,16 @@ class PathRuleStore {
         var bestLen = 0
         var bestIsRoot = false
         for ((from, to) in pathRedirections) {
-            val isPrefix = originalPath.startsWith(from)
-            val isRoot = !isPrefix && from.endsWith("/") &&
-                from.length == originalPath.length + 1 && from.startsWith(originalPath)
-            if (!isPrefix && !isRoot) continue
-            val effectiveLen = if (isRoot) originalPath.length else from.length
+            // 匹配语义统一由 PathPattern 提供（与 C++ path_pattern.h 同构）
+            val pattern = PathPattern.parse(from)
+            val isGlob = pattern.kind == PathPattern.Kind.GLOB
+            val isPrefix = pattern.kind == PathPattern.Kind.PREFIX && originalPath.startsWith(pattern.text)
+            val isRoot = !isPrefix && pattern.isRootForm(originalPath)
+            if (!isPrefix && !isRoot && !isGlob) continue
+            val effectiveLen = if (isRoot) originalPath.length else pattern.text.length
             if (!(effectiveLen > bestLen || (effectiveLen == bestLen && bestIsRoot && !isRoot))) continue
             bestLen = effectiveLen
-            bestMatch = if (isRoot) originalPath else from
+            bestMatch = if (isRoot || isGlob) originalPath else pattern.text
             bestRedirect = if (isRoot) to.trimEnd('/') else to
             bestIsRoot = isRoot
         }

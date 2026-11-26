@@ -42,10 +42,31 @@ object DiagFiles {
     fun trace(prefix: String, pid: Int): String = "$prefix-$pid-1.trace"
 
     /**
-     * 给 C++ `is_container_diag_path` 下发的标记（不含前导 `/`）。
-     * 与 `check-diag-channels.mjs` 的契约：C++ 白名单 ⊆ 本列表。
+     * 给 C++ `is_container_diag_path` 的标记（**唯一来源**：
+     * `core/common/src/main/resources/diag_channels.tsv`，见 `tools/gen/gen-diag-channels.mjs`）。
+     * 读不到配置时回退内置表，保证 release/异常环境行为不变。
      */
-    fun markers(): Array<String> = arrayOf(
+    fun markers(): Array<String> = markersFromConfig() ?: FALLBACK_MARKERS
+
+    private fun markersFromConfig(): Array<String>? = try {
+        DiagFiles::class.java.getResourceAsStream(CONFIG_RESOURCE)?.bufferedReader()?.use { r ->
+            val out = ArrayList<String>()
+            r.forEachLine { raw ->
+                val line = raw.trim()
+                if (line.isNotEmpty() && !line.startsWith("#")) {
+                    val cols = line.split('\t')
+                    if (cols.size >= 2) cols[1].trim().takeIf { it.isNotEmpty() }?.let { out.add(it) }
+                }
+            }
+            out.toTypedArray().takeIf { it.isNotEmpty() }
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
+    private const val CONFIG_RESOURCE = "/diag_channels.tsv"
+
+    private val FALLBACK_MARKERS: Array<String> = arrayOf(
         DEBUG_TRACE, CHECKS, SECCOMP_DIAG,
         "breadcrumb-", "stackdump-", "hijacktrace-", "startactivity-trace-",
         "webviewwarm-", "webviewwatch-", "stateprobe-", "dexmem-",

@@ -1,0 +1,41 @@
+# 诊断文件名白名单（Kotlin 与 C++ 的唯一来源）
+#
+# 格式：section <TAB> marker <TAB> note
+# section 含义：
+#   shared  两端都识别（Kotlin 生产 + C++ 的 Java IO 日志配额判断）
+#   kotlin  只 Kotlin 生产；C++ 仍须识别（否则这些写入会占配额并刷屏）
+#   cpp     只 C++ 生产；Kotlin 侧不参与判定（差异区）
+#
+# 使用方：
+#   Kotlin  DiagFiles.markers()             -> shared + kotlin + cpp（下发给 C++）
+#   C++     is_container_diag_path()        -> shared + kotlin + cpp
+#   校验    tools/lint/check-diag-channels.mjs（C++ 识别集合必须覆盖 shared+kotlin）
+#
+# 生成物：core/hook/src/main/cpp/core/diag_channels.inc
+#   node tools/gen/gen-diag-channels.mjs          # 重新生成
+#   node tools/gen/gen-diag-channels.mjs --check  # CI：生成物必须与 TSV 一致
+#
+# 新增通道时：本文件加一行 -> 跑生成脚本 -> 提交两个文件。
+
+shared	debug-trace.log	DebugTrace 统一通道（Timber 文件 Tree）
+shared	checks.log	结构化检查结果（DiagnosticsHolder/FileSink）
+shared	seccomp-diag.log	seccomp 原始系统调用诊断
+shared	breadcrumb-	GuestBreadcrumb（+pid.log）
+shared	stackdump-	GuestMemoryDump 线程栈（+pid.log）
+shared	hijacktrace-	HijackProbes 劫持观测（+pid.log）
+shared	startactivity-trace-	投递 witness（ActivityBinderWrap / ActivityThreadHook）
+shared	webviewwarm-	WebViewWarmup（+pid.log）
+shared	webviewwatch-	WebViewWatch（+pid.log）
+
+kotlin	stateprobe-	StateProbe（联通专用）
+kotlin	dexmem-	DexMemDump（联通专用）
+kotlin	shortcut-probe-	ShortcutProbe
+kotlin	memdex-	GuestMemoryDump 内存 dex（.dex）
+kotlin	v139-probe.log	VirtualEngine 类加载探针
+kotlin	v144-intent-probe.log	LoginProbes / ActivityManagerProxy
+kotlin	v145-intent-probe.log	LoginProbes / ActivityManagerProxy
+kotlin	v148-connect-probe.log	NativeHookBridge connect ring
+kotlin	-filtered.log	InitTrace / LoginProbes 过滤结果
+kotlin	-1.trace	API trace 原始文件
+
+cpp	-hooklog-	预留：只 C++ 生产、Kotlin 不判定（差异区示例）
