@@ -5,16 +5,13 @@ import android.app.Instrumentation
 import android.content.ContentProvider
 import android.content.Context
 import android.content.pm.ApplicationInfo
-import android.content.pm.ProviderInfo
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
-import com.nextvm.core.common.AndroidCompat
 import com.nextvm.core.common.diagnostics.DiagFiles
 import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.findField
 import com.nextvm.core.common.findMethod
-import com.nextvm.core.common.runSafe
 import com.nextvm.core.binder.proxy.ActivityManagerProxy
 import com.nextvm.core.hook.NativeHookBridge
 import timber.log.Timber
@@ -33,6 +30,8 @@ import com.nextvm.core.virtualization.diag.dump.MapsSnapshot
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.diag.dump.RealSnap
 import com.nextvm.core.virtualization.engine.LifecycleRecorder
+import com.nextvm.core.virtualization.lifecycle.startup.ContentProviderInitializer
+import com.nextvm.core.virtualization.lifecycle.startup.GuestApplicationFactory
 
 /**
  * VirtualApplicationManager — Manages guest app Application lifecycle.
@@ -1113,73 +1112,11 @@ class VirtualApplicationManager @Inject constructor(
         classLoader: ClassLoader,
         virtualContext: Context,
         appInfo: ApplicationInfo? = null
-    ): Application? {
-        val className = applicationClassName ?: "android.app.Application"
-
-        Timber.tag(TAG).d("Creating Application: $className for $packageName")
-
-        return try {
-            // Try AppComponentFactory on Android 9+
-            if (AndroidCompat.isAtLeastP) {
-                val factoryApp = createViaAppComponentFactory(className, classLoader)
-                if (factoryApp != null) {
-                    Timber.tag(TAG).d("Application created via AppComponentFactory")
-                    return factoryApp
-                }
-            }
-
-            // Standard reflection path
-            val appClass = if (className == "android.app.Application") {
-                Application::class.java
-            } else {
-                classLoader.loadClass(className)
-            }
-
-            val app = appClass.getDeclaredConstructor().let { ctor ->
-                ctor.isAccessible = true
-                ctor.newInstance()
-            } as Application
-
-            Timber.tag(TAG).d("Application created via reflection: $className")
-            app
-
-        } catch (e: ClassNotFoundException) {
-            Timber.tag(TAG).w("Application class not found: $className, falling back to base Application")
-            try {
-                Application::class.java.getDeclaredConstructor().newInstance()
-            } catch (e2: Exception) {
-                Timber.tag(TAG).e(e2, "Failed to create fallback Application")
-                null
-            }
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to create Application: $className")
-            null
-        }
-    }
-
-    /**
-     * Try to create Application via AppComponentFactory (Android 9+).
-     *
-     * Real Android uses AppComponentFactory to allow apps to customize
-     * instantiation of Application, Activity, Service, etc.
-     */
-    private fun createViaAppComponentFactory(
-        className: String,
-        classLoader: ClassLoader
-    ): Application? {
-        return runSafe(TAG) {
-            val factoryClass = Class.forName("android.app.AppComponentFactory")
-            val factory = factoryClass.getDeclaredConstructor().newInstance()
-
-            val instantiateMethod = findMethod(
-                factoryClass,
-                "instantiateApplication",
-                arrayOf(ClassLoader::class.java, String::class.java)
-            )
-            instantiateMethod?.isAccessible = true
-            instantiateMethod?.invoke(factory, classLoader, className) as? Application
-        }
-    }
+    ): Application? = GuestApplicationFactory.create(
+        packageName = packageName,
+        className = GuestApplicationFactory.classNameOf(applicationClassName),
+        classLoader = classLoader,
+    )
 
     /**
      * Attach base context to Application.
@@ -1537,88 +1474,17 @@ class VirtualApplicationManager @Inject constructor(
         application: Application,
         providerMetaData: Map<String, Bundle> = emptyMap()
     ) {
-        Timber.tag(TAG).d("Installing ${providers.size} ContentProviders for $instanceId")
-        GuestBreadcrumb.log("providers begin n=" + providers.size +
-            " list=" + providers.joinToString(","))
-
         val record = applications[instanceId]
-
-        for (providerClassName in providers) {
-            // Skip ShizukuProvider — requires INTERACT_ACROSS_USERS_FULL which
-            // is not available in the virtual environment. Attempting to install
-            // it causes SecurityException in ContentResolver.call().
-            val providerAuthority = authorities[providerClassName] ?: ""
-            if (providerClassName.contains("shizuku", ignoreCase = true) ||
-                providerClassName.contains("rikka.shizuku", ignoreCase = true) ||
-                providerAuthority.contains("shizuku", ignoreCase = true)
-            ) {
-                Timber.tag(TAG).d("Skipping ShizukuProvider: $providerClassName — cross-user permission unavailable")
-                continue
-            }
-
-            GuestBreadcrumb.log("provider attachInfo enter $providerClassName")
-            try {
-                val providerClass = classLoader.loadClass(providerClassName)
-                val provider = providerClass.getDeclaredConstructor().let { ctor ->
-                    ctor.isAccessible = true
-                    ctor.newInstance()
-                } as ContentProvider
-
-                // Build ProviderInfo for attachInfo()
-                val providerInfo = ProviderInfo().apply {
-                    name = providerClassName
-                    authority = providerAuthority.ifEmpty {
-                        "${virtualContext.packageName}.${providerClassName.substringAfterLast(".")}"
-                    }
-                    applicationInfo = virtualContext.applicationInfo
-                    exported = false
-                    enabled = true
-                    grantUriPermissions = true
-                    // v39: manifest meta-data parsed from the guest APK.
-                    // Providers reading their meta-data in attachInfo /
-                    // onCreate must find it here, as on a real install.
-                    metaData = providerMetaData[providerClassName]
-                }
-
-                // Call ContentProvider.attachInfo(context, info)
-                // This calls both attachInfo internally and then onCreate()
-                // v39: pass the guest Application, as AOSP's
-                // installContentProviders does — NOT a bare ContextImpl.
-                // Providers that cast getContext() to Application (e.g.
-                // SoulPermission's InitProvider, which registers the
-                // activity-lifecycle tracker behind getTopActivity())
-                // died on the cast, silently disabling themselves.
-                provider.attachInfo(application, providerInfo)
-
-                record?.contentProviders?.add(provider)
-                ActivityManagerProxy.activeInstance?.registerVirtualProvider(
-                    providerInfo.authority,
-                    provider
-                )
-                Timber.tag(TAG).d("  Provider installed: $providerClassName")
-                GuestBreadcrumb.log(
-                    "provider ok $providerClassName authority=${providerInfo.authority}"
-                )
-
-            } catch (e: ClassNotFoundException) {
-                GuestBreadcrumb.logThrowable(
-                    "provider NOT FOUND, skipped: $providerClassName", e)
-                Timber.tag(TAG).w("ContentProvider class not found: $providerClassName (skipping)")
-            } catch (e: SecurityException) {
-                GuestBreadcrumb.logThrowable(
-                    "provider SecurityException SWALLOWED, skipped: $providerClassName", e)
-                Timber.tag(TAG).w("SecurityException skipping provider $providerClassName: ${e.message}")
-            } catch (e: IllegalStateException) {
-                GuestBreadcrumb.logThrowable(
-                    "provider IllegalStateException SWALLOWED, skipped: $providerClassName", e)
-                Timber.tag(TAG).w("IllegalStateException skipping provider $providerClassName: ${e.message}")
-            } catch (e: Exception) {
-                GuestBreadcrumb.logThrowable(
-                    "provider FAILED (bind continues): $providerClassName", e)
-                Timber.tag(TAG).e(e, "Failed to install ContentProvider: $providerClassName")
-                // Don't fail the whole app — some providers are optional
-            }
-        }
+        ContentProviderInitializer.install(
+            instanceId = instanceId,
+            providers = providers,
+            authorities = authorities,
+            classLoader = classLoader,
+            virtualContext = virtualContext,
+            application = application,
+            providerMetaData = providerMetaData,
+            installedInto = record?.contentProviders,
+        )
     }
 
     /**
