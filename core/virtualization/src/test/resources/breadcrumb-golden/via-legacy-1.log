@@ -1,0 +1,40 @@
+breadcrumb begin pkg=mark.via pid=<PID> wall=<WALL>
+replaceClassLoader enter pkg=mark.via instance=mark.via_<TS>
+createFrameworkLoadedApk call pkg=mark.via appInfo.packageName=mark.via appInfo.className=mark.via.BrowserApp appInfo.sourceDir=/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_<TS>.apk
+createFrameworkLoadedApk result loadedApk=#<ID> mPackageName=mark.via ai.packageName=mark.via ai.sourceDir=/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_<TS>.apk mApplication=null mPackages[guest]=#<ID> mPackages[host]=#<ID>
+replaceClassLoader host=#<ID> guestCL=#<ID>
+replaceClassLoader done pkg=mark.via target=#<ID> mPackages[guest]=#<ID> mPackages[host]=#<ID>
+v79 probe target=mark.via.Shell clone=#<ID> mResources(before)=#<ID> zipOpen=ok entries=<N> getResources()=THREW NoSuchMethodException: android.app.LoadedApk.getResources [class android.app.ActivityThread] mResources(after)=#<ID>
+v81 watch start path=/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_<TS>.apk exists=true len=<N> guard=false
+v118-provider-fields idx=0 name=androidx.core.content.FileProvider authority=mark.via.provider initOrder=0 exported=false enabled=true multiprocess=false readPermission=null writePermission=null process=mark.via
+v118-provider-fields idx=1 name=androidx.startup.InitializationProvider authority=mark.via.androidx-startup initOrder=0 exported=false enabled=true multiprocess=false readPermission=null writePermission=null process=mark.via
+breadcrumb begin (already active, kept) pkg=mark.via
+bind start instance=mark.via_<TS> appClass=mark.via.BrowserApp providers=2 frameworkLoadedApk=false
+legacy attachBaseContext enter
+legacy attachBaseContext exit
+providers begin n=2 list=androidx.core.content.FileProvider,androidx.startup.InitializationProvider
+provider attachInfo enter androidx.core.content.FileProvider
+provider ok androidx.core.content.FileProvider authority=mark.via.provider
+provider attachInfo enter androidx.startup.InitializationProvider
+provider ok androidx.startup.InitializationProvider authority=mark.via.androidx-startup
+Application.onCreate enter mark.via.BrowserApp
+Application.onCreate exit ok
+v116-plugin-probe PluginManagerProvider registered=false (contentProviders=2)
+v116-plugin-probe PluginLoader class not found: ClassNotFoundException
+v138-appctx mInitialApplication com.nextvm.app -> mark.via ; mBoundApplication.appContext failed: NoSuchFieldException
+v142-redirect registered rules=<N> appDir=/data/user/0/com.nextvm.app/files/virtual/data/mark.via_<TS> sdcard=/data/user/0/com.nextvm.app/files/virtual/data/mark.via_<TS>/sdcard
+v143-datadir skip (whitelist) pkg=mark.via
+guest diagnostics installed
+v130-watchdog started
+engine breadcrumb callbacks registered on mark.via.BrowserApp
+bind complete (legacy path)
+instr newActivity mark.via.Shell
+instr callActivityOnCreate enter mark.via.Shell
+preCreate enter mark.via.Shell
+cb onActivityCreated mark.via.Shell
+v129-autofill disabled mark.via.Shell
+v118-plugin-probe phase=firstActivity PluginManagerProvider registered=false (contentProviders=2)
+v118-plugin-probe phase=firstActivity PluginLoader class not found: ClassNotFoundException
+instr callActivityOnCreate exit ok mark.via.Shell
+cb onActivityStarted mark.via.Shell
+cb onActivityResumed mark.via.Shell

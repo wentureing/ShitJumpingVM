@@ -8,16 +8,21 @@ import org.junit.Test
  * guest 启动链 breadcrumb 契约（golden 驱动，纯 JVM）。
  *
  * 契约清单、golden 来源与归一化规则见 `docs/架构/架构-启动链契约.md`。
+ * 两条 bind 路径（framework / legacy）共用 C1–C3、C5、C6、C9–C11，C4/C7 与 C12 按路径分支。
  */
 class BreadcrumbGoldenContractTest {
 
-    /** 一个采集样本：2 个 guest × 2 次启动 */
+    /** bindApplication 的两条装配路径：framework LoadedApk / legacy 手工装配 */
+    private enum class BindPath { FRAMEWORK, LEGACY }
+
+    /** 一个采集样本：2 个 guest × 2 次启动，外加 legacy 路径 2 次 */
     private data class Sample(
         val tag: String,
         val guest: String,
         val appClass: String,
         val activity: String,
         val providers: Int,
+        val path: BindPath = BindPath.FRAMEWORK,
     )
 
     private val samples = listOf(
@@ -25,6 +30,11 @@ class BreadcrumbGoldenContractTest {
         Sample("via-2", "mark.via", "mark.via.BrowserApp", "mark.via.Shell", 2),
         Sample("probe-1", "com.sandbox.probe", "com.sandbox.probe.ProbeApplication", "com.sandbox.probe.ProbeActivity", 1),
         Sample("probe-2", "com.sandbox.probe", "com.sandbox.probe.ProbeApplication", "com.sandbox.probe.ProbeActivity", 1),
+        // setprop debug.nextvm.frameworkBind 0 采集（变更/20261126-legacy-bind-golden.md）
+        Sample("via-legacy-1", "mark.via", "mark.via.BrowserApp", "mark.via.Shell", 2, BindPath.LEGACY),
+        Sample("via-legacy-2", "mark.via", "mark.via.BrowserApp", "mark.via.Shell", 2, BindPath.LEGACY),
+        Sample("probe-legacy-1", "com.sandbox.probe", "com.sandbox.probe.ProbeApplication", "com.sandbox.probe.ProbeActivity", 1, BindPath.LEGACY),
+        Sample("probe-legacy-2", "com.sandbox.probe", "com.sandbox.probe.ProbeApplication", "com.sandbox.probe.ProbeActivity", 1, BindPath.LEGACY),
     )
 
     // ---------------------------------------------------------------- 解析
@@ -105,18 +115,42 @@ class BreadcrumbGoldenContractTest {
     fun `C4 Application 只构造一次且出口类名与入参一致`() {
         for (s in samples) {
             val lines = events(s.tag)
-            assertOrder(
-                s.tag, lines,
-                "framework makeApplication enter",
-                "instr newApplication ${s.appClass}",
-                "framework makeApplication exit app=${s.appClass}",
-            )
-            assertEquals("C4 ${s.tag}: makeApplication 只能进入一次", 1, lines.countPrefix("framework makeApplication enter"))
-            assertEquals(
-                "C4 ${s.tag}: newApplication 只能一次",
-                1,
-                lines.countPrefix("instr newApplication "),
-            )
+            when (s.path) {
+                BindPath.FRAMEWORK -> {
+                    assertOrder(
+                        s.tag, lines,
+                        "framework makeApplication enter",
+                        "instr newApplication ${s.appClass}",
+                        "framework makeApplication exit app=${s.appClass}",
+                    )
+                    assertEquals(
+                        "C4 ${s.tag}: makeApplication 只能进入一次",
+                        1, lines.countPrefix("framework makeApplication enter"),
+                    )
+                    assertEquals(
+                        "C4 ${s.tag}: newApplication 只能一次",
+                        1, lines.countPrefix("instr newApplication "),
+                    )
+                }
+
+                BindPath.LEGACY -> {
+                    // 手工装配：attachBaseContext 包裹 onCreate，且不得出现 framework 的 makeApplication
+                    assertOrder(
+                        s.tag, lines,
+                        "legacy attachBaseContext enter",
+                        "legacy attachBaseContext exit",
+                        "Application.onCreate enter",
+                    )
+                    assertEquals(
+                        "C4 ${s.tag}: legacy 路径不应出现 framework makeApplication",
+                        0, lines.countPrefix("framework makeApplication"),
+                    )
+                    assertEquals(
+                        "C4 ${s.tag}: legacy 路径不应出现 instr newApplication",
+                        0, lines.countPrefix("instr newApplication "),
+                    )
+                }
+            }
         }
     }
 
@@ -159,16 +193,22 @@ class BreadcrumbGoldenContractTest {
     }
 
     @Test
-    fun `C7 bind 段以唯一的 bind complete 收尾，随后才起首个 Activity`() {
+    fun `C7 bind 段以唯一且路径相符的 bind complete 收尾，随后才起首个 Activity`() {
         for (s in samples) {
             val lines = events(s.tag)
+            val expected = when (s.path) {
+                BindPath.FRAMEWORK -> "bind complete (framework path)"
+                BindPath.LEGACY -> "bind complete (legacy path)"
+            }
             assertOrder(
                 s.tag, lines,
                 "engine breadcrumb callbacks registered",
-                "bind complete (framework path)",
+                expected,
                 "instr newActivity ${s.activity}",
             )
             assertEquals("C7 ${s.tag}: bind complete 只能出现一次", 1, lines.countPrefix("bind complete"))
+            val other = if (s.path == BindPath.FRAMEWORK) "bind complete (legacy path)" else "bind complete (framework path)"
+            assertEquals("C7 ${s.tag}: 不应出现另一条路径的收尾「$other」", 0, lines.countPrefix(other))
         }
     }
 
@@ -219,30 +259,82 @@ class BreadcrumbGoldenContractTest {
 
     @Test
     fun `C10 启动链各阶段只执行一次`() {
-        val once = listOf(
+        val common = listOf(
             "bind start ",
-            "framework makeApplication enter",
-            "framework makeApplication exit app=",
             "bind complete",
             "instr newActivity ",
             "Application.onCreate enter",
         )
+        val frameworkOnly = listOf(
+            "framework makeApplication enter",
+            "framework makeApplication exit app=",
+            "engine breadcrumb callbacks registered",
+        )
         for (s in samples) {
             val lines = events(s.tag)
-            for (p in once) {
+            for (p in common) {
                 assertEquals("C10 ${s.tag}: 「$p」应恰好 1 次", 1, lines.countPrefix(p))
+            }
+            if (s.path == BindPath.FRAMEWORK) {
+                for (p in frameworkOnly) {
+                    assertEquals("C10 ${s.tag}: 「$p」应恰好 1 次", 1, lines.countPrefix(p))
+                }
             }
         }
     }
 
     @Test
-    fun `C11 同一 guest 的两次启动逐行一致`() {
-        for ((a, b) in listOf("via-1" to "via-2", "probe-1" to "probe-2")) {
+    fun `C11 同一路径的两次启动逐行一致`() {
+        for ((a, b) in listOf(
+            "via-1" to "via-2",
+            "probe-1" to "probe-2",
+            "via-legacy-1" to "via-legacy-2",
+            "probe-legacy-1" to "probe-legacy-2",
+        )) {
             val la = events(a)
             val lb = events(b)
             assertEquals("C11 $a/$b: 行数", la.size, lb.size)
             for (i in la.indices) {
                 assertEquals("C11 $a/$b: 第 ${i + 1} 行", la[i], lb[i])
+            }
+        }
+    }
+
+    @Test
+    fun `C12 legacy 路径的装配特征（frameworkLoadedApk=false + 手工 attach）`() {
+        for (s in samples) {
+            val lines = events(s.tag)
+            val bindStart = lines.first { it.startsWith("bind start ") }
+            when (s.path) {
+                BindPath.LEGACY -> {
+                    assertTrue(
+                        "C12 ${s.tag}: legacy 样本必须带 frameworkLoadedApk=false（开关生效的证据）",
+                        bindStart.contains("frameworkLoadedApk=false"),
+                    )
+                    assertEquals(
+                        "C12 ${s.tag}: legacy 路径 attachBaseContext 只进一次",
+                        1, lines.countPrefix("legacy attachBaseContext enter"),
+                    )
+                    assertEquals(
+                        "C12 ${s.tag}: attachBaseContext 也要退出一次（否则 attach 抛异常被吞）",
+                        1, lines.countPrefix("legacy attachBaseContext exit"),
+                    )
+                    assertTrue(
+                        "C12 ${s.tag}: legacy 路径仍应创建 framework LoadedApk（只是不交给 VAM）",
+                        lines.any { it.startsWith("createFrameworkLoadedApk call ") },
+                    )
+                }
+
+                BindPath.FRAMEWORK -> {
+                    assertTrue(
+                        "C12 ${s.tag}: framework 样本必须带 frameworkLoadedApk=true",
+                        bindStart.contains("frameworkLoadedApk=true"),
+                    )
+                    assertEquals(
+                        "C12 ${s.tag}: framework 路径不应出现 legacy attachBaseContext",
+                        0, lines.countPrefix("legacy attachBaseContext"),
+                    )
+                }
             }
         }
     }
