@@ -7,6 +7,7 @@ import android.util.Base64
 import android.util.Log
 import com.nextvm.core.sandbox.SandboxManager
 import com.nextvm.core.virtualization.engine.VirtualEngine
+import com.nextvm.core.virtualization.engine.VmResult
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -103,7 +104,8 @@ class CmdReceiver : BroadcastReceiver() {
                     return
                 }
                 val r = engine.launchAppByPackage(pkg)
-                Log.i(TAG, "LAUNCH $pkg -> $r")
+                if (r is VmResult.Error) Log.e(TAG, "LAUNCH $pkg -> $r")
+                else Log.i(TAG, "LAUNCH $pkg -> $r")
             }
 
             ACTION_LAUNCH_ACTIVITY -> {
@@ -118,7 +120,8 @@ class CmdReceiver : BroadcastReceiver() {
                     return
                 }
                 val r = engine.launchAppByPackage(pkg, activity)
-                Log.i(TAG, "LAUNCH_ACTIVITY $pkg/$activity -> $r")
+                if (r is VmResult.Error) Log.e(TAG, "LAUNCH_ACTIVITY $pkg/$activity -> $r")
+                else Log.i(TAG, "LAUNCH_ACTIVITY $pkg/$activity -> $r")
             }
 
             ACTION_UNINSTALL -> {

@@ -73,6 +73,12 @@ object DebugFlags {
      */
     const val FRAMEWORK_BIND = "frameworkBind"
 
+    /**
+     * 打开 guest 时复用已有会话（已有进程就切前台，不新分配 stub / 不新建 Task）。
+     * 置 `0` 回到"每次点击都新起一个 Task"的旧行为（现场二分用）。
+     */
+    const val SESSION_REUSE = "sessionReuse"
+
     private class Cached(val value: Boolean, val at: Long)
 
     private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()

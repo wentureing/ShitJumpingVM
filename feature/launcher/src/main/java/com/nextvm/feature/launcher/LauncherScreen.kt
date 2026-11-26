@@ -28,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,9 +56,33 @@ fun LauncherScreen(
     LaunchedEffect(Unit) {
         viewModel.effects.collect { effect ->
             when (effect) {
-                is LauncherEffect.ShowError -> snackbarHostState.showSnackbar(effect.message)
-                is LauncherEffect.AppLaunched -> snackbarHostState.showSnackbar("Launched ${effect.appName}")
-                is LauncherEffect.AppUninstalled -> snackbarHostState.showSnackbar("Uninstalled ${effect.appName}")
+                // 错误优先：立刻替换当前提示（否则会排在 "Launched xxx" 后面，最长等 4s 才出现）
+                is LauncherEffect.ShowError -> {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    launch {
+                        snackbarHostState.showSnackbar(
+                            message = effect.message,
+                            duration = SnackbarDuration.Long
+                        )
+                    }
+                }
+                is LauncherEffect.AppLaunched -> launch {
+                    // 有错误在显示时不抢屏：错误信息优先于成功提示
+                    if (snackbarHostState.currentSnackbarData == null) {
+                        snackbarHostState.showSnackbar(
+                            message = "Launched ${effect.appName}",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                }
+                is LauncherEffect.AppUninstalled -> launch {
+                    if (snackbarHostState.currentSnackbarData == null) {
+                        snackbarHostState.showSnackbar(
+                            message = "Uninstalled ${effect.appName}",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                }
                 is LauncherEffect.NavigateToRoute -> onNavigateToRoute(effect.route)
             }
         }

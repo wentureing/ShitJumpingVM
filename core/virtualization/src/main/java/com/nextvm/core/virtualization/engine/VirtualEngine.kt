@@ -39,6 +39,7 @@ import com.nextvm.core.virtualization.process.VirtualMultiProcessManager
 import com.nextvm.core.virtualization.process.RecordSnapshot
 import com.nextvm.core.virtualization.process.SlotLeaseRegistry
 import com.nextvm.core.virtualization.process.SlotReconciler
+import com.nextvm.core.virtualization.process.SlotState
 import com.nextvm.core.virtualization.process.SlotStatus
 import com.nextvm.core.virtualization.process.SlotStatusProbe
 import com.nextvm.core.virtualization.ui.VirtualWindowManager
@@ -625,6 +626,39 @@ class VirtualEngine @Inject constructor(
                 ?: serviceManager.packageManager.getMainActivity(app.packageName)
                 ?: return VmResult.Error("No main activity found for ${app.packageName}")
 
+            // 2. 会话复用（Step 2）：有活会话就切前台，不消耗 stub、不新建 Task
+            var reusedStub: String? = null
+            if (DebugFlags.isOn(DebugFlags.SESSION_REUSE, true)) {
+                val lease = slotLeases.byInstance(instanceId)
+                if (lease != null) {
+                    val st = slotStatus().firstOrNull {
+                        it.slot == lease.slot && it.instanceId == instanceId
+                    }
+                    if (st != null && st.taskId > 0) slotLeases.noteTaskId(instanceId, st.taskId)
+                    val alive = st?.state == SlotState.RUNNING
+                    if (st != null && alive && st.taskId > 0 && bringTaskToFront(st.taskId)) {
+                        DiagnosticsHolder.stage(
+                            "slot",
+                            "reuse bringToFront instance=$instanceId slot=${lease.slot} task=${st.taskId}",
+                        )
+                        runningApps[instanceId] = app.processSlot
+                        updateAppState(instanceId) {
+                            it.copy(isRunning = true, lastLaunchedAt = System.currentTimeMillis())
+                        }
+                        Timber.tag(TAG).i(
+                            "Reused live session: ${app.appName} (slot=${lease.slot} task=${st.taskId})"
+                        )
+                        return VmResult.Success(Unit)
+                    }
+                    when {
+                        // 进程还在但没界面（Activity 全 finish）：沿用原 stub 重开，仍不新起进程
+                        alive -> reusedStub = lease.stubClassName
+                        // 进程已不在：不复用死会话，走新分配（清理留给 Step 3）
+                        else -> slotLeases.release(instanceId)
+                    }
+                }
+            }
+
             // 2. Get launch mode from VPMS and convert to string for StubRegistry
             val launchModeInt = serviceManager.packageManager.getActivityLaunchMode(
                 app.packageName, mainActivity
@@ -636,11 +670,23 @@ class VirtualEngine @Inject constructor(
                 else -> "standard"
             }
 
-            // 3. Resolve stub class based on launch mode
-            val stubClass = stubRegistry.resolveStub(
+            // 4. Resolve stub class（复用会话时沿用租约里的 stub：同一 affinity → 同一 Task、同一进程）
+            val stubClass = reusedStub ?: stubRegistry.resolveStub(
                 slot = app.processSlot,
                 launchMode = launchMode
-            ) ?: return VmResult.Error("No available stub for process slot ${app.processSlot}")
+            ) ?: run {
+                // 失败必须显式打 E 级 + 落盘：否则只会随返回值被上层 INFO 日志吞掉
+                val msg = "No available stub for process slot ${app.processSlot}" +
+                    " (instance=$instanceId mode=$launchMode)"
+                DiagnosticsHolder.error("slot", msg)
+                DebugTrace.fail("slot", msg)
+                Timber.tag(TAG).e(msg)
+                return VmResult.Error(msg)
+            }
+            if (reusedStub == null) {
+                // 先登记租约再启动：进程起来了但租约缺失会变成 ORPHAN（只能人工清理）
+                slotLeases.acquire(app.processSlot, instanceId, stubClass)
+            }
 
             // 4. Build the swapped intent
             val intent = Intent().apply {
@@ -769,6 +815,7 @@ class VirtualEngine @Inject constructor(
         // 位置必须在 SIGKILL 之后：VAMS 记录已清、进程已死。
         // 守卫 1：同 slot 还有别的实例在跑就不归还（L2 未修时两实例共用 slot）。
         // 守卫 2：容器重启后 stubRegistry 可能尚未初始化。
+        slotLeases.release(instanceId)
         if (slot != null && ::stubRegistry.isInitialized && runningApps.values.none { it == slot }) {
             stubRegistry.releaseAllStubsForSlot(slot)
             // 三条通道：checks.log（结构化，探针读）/ debug-trace.log（Timber）/ logcat（兜底）
@@ -932,6 +979,26 @@ class VirtualEngine @Inject constructor(
             DiagnosticsHolder.error("slot", msg, t)
             DebugTrace.fail("slot", msg)
             emptyList()
+        }
+    }
+
+    /** 把该 task 带到前台；失败返回 false（调用方回退到"重新 startActivity"）。 */
+    private fun bringTaskToFront(taskId: Int): Boolean {
+        if (taskId <= 0) return false
+        return runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                ?: return@runCatching false
+            val task = am.appTasks.firstOrNull { it.taskInfo.taskId == taskId }
+                ?: return@runCatching false
+            task.moveToFront()
+            true
+        }.getOrElse { t ->
+            DiagnosticsHolder.error(
+                "slot",
+                "bringToFront failed task=$taskId: " + t.javaClass.simpleName + ": " + t.message,
+                t,
+            )
+            false
         }
     }
 
