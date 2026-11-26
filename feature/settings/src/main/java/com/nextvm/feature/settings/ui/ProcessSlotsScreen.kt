@@ -62,7 +62,10 @@ fun ProcessSlotsScreen(
 
     LaunchedEffect(Unit) {
         viewModel.effects.collect { effect ->
-            snackbarHostState.showSnackbar(effect.message, duration = SnackbarDuration.Short)
+            when (effect) {
+                is ProcessSlotsViewModel.Effect.ShowMessage ->
+                    snackbarHostState.showSnackbar(effect.message, duration = SnackbarDuration.Short)
+            }
         }
     }
 
