@@ -1,5 +1,7 @@
 package com.nextvm.core.common
 
+import com.nextvm.core.common.diagnostics.DiagOutput
+
 /**
  * 统一调试开关（v145）。
  *
@@ -78,6 +80,7 @@ object DebugFlags {
         if (initialized) return
         initialized = true
         DebugTrace.init(context?.filesDir)
+        DiagOutput.setDir(context?.filesDir)
         DebugTrace.event("flags", "BuildConfig.DEBUG=true, " + snapshot())
     }
 

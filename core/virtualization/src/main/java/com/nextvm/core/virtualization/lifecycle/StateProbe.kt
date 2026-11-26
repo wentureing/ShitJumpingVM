@@ -1,5 +1,7 @@
 package com.nextvm.core.virtualization.lifecycle
 
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import java.io.File
 import java.lang.reflect.Field
 import java.util.concurrent.atomic.AtomicBoolean
@@ -75,7 +77,7 @@ object StateProbe {
         Thread {
             try {
                 val pid = android.os.Process.myPid()
-                val log = File(filesDir, "stateprobe-$pid.log")
+                val name = DiagFiles.stateProbe(pid)
                 val marks = listOf(
                     2_000L to "t+2s", 7_000L to "t+7s",
                     15_000L to "t+15s", 30_000L to "t+30s",
@@ -87,7 +89,7 @@ object StateProbe {
                     if (wait > 0) Thread.sleep(wait)
                     elapsed = at
                     try {
-                        sample(log, label)
+                        sample(filesDir, name, label)
                     } catch (_: Throwable) {
                         // one bad sample must not kill the rest
                     }
@@ -179,7 +181,7 @@ object StateProbe {
         return emptyList()
     }
 
-    private fun sample(log: File, label: String) {
+    private fun sample(dir: File, name: String, label: String) {
         val sb = StringBuilder()
         sb.append("==== ").append(label).append(" ====\n")
         fun line(s: String) {
@@ -190,7 +192,7 @@ object StateProbe {
             val at = atCls.getMethod("currentActivityThread").invoke(null)
             if (at == null) {
                 line("ActivityThread: null")
-                log.appendText(sb.toString())
+                DiagOutput.appendIn(dir, name, sb.toString())
                 return
             }
             val app = atCls.getMethod("getApplication").invoke(at)
@@ -479,7 +481,7 @@ object StateProbe {
             line("sample aborted <" + e.javaClass.simpleName + "> " + e.message)
         }
         try {
-            log.appendText(sb.toString())
+            DiagOutput.appendIn(dir, name, sb.toString())
         } catch (_: Throwable) {
             // diagnostics must never disturb the guest
         }

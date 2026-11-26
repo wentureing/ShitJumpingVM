@@ -1,6 +1,8 @@
 package com.nextvm.core.virtualization.diag.probe
 
 import android.app.Activity
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.findField
 import com.nextvm.core.virtualization.diag.trace.InitTrace
 import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
@@ -380,7 +382,8 @@ internal object LoginProbes {
             } catch (_: Throwable) {
                 null
             } ?: return
-            File(dir, "v144-intent-probe.log").appendText(
+            DiagOutput.appendIn(
+                dir, DiagFiles.v144IntentProbe(),
                 formatAuthRecv(data != null, data?.scheme, data?.host, keys, phoneFound, phoneEmpty) + "\n"
             )
         } catch (_: Throwable) {
@@ -444,7 +447,8 @@ internal object LoginProbes {
             } catch (_: Throwable) {
                 null
             } ?: return
-            File(dir, "v145-intent-probe.log").appendText(
+            DiagOutput.appendIn(
+                dir, DiagFiles.v145IntentProbe(),
                 formatAuthRecv145(
                     nestedKeys("bundle"),
                     nestedKeys("_componentQueryBundle"),

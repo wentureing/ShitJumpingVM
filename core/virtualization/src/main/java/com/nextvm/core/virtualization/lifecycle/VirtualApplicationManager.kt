@@ -509,7 +509,7 @@ class VirtualApplicationManager @Inject constructor(
                     .getMethod("currentApplication").invoke(null)
                     as? android.app.Application ?: return@Thread
                 val out = java.io.File(
-                    hostApp.filesDir, "stackdump-${android.os.Process.myPid()}.log"
+                    hostApp.filesDir, DiagFiles.stackDump(android.os.Process.myPid())
                 )
                 // Cadence (v29): logcat comparison against a real
                 // device localized the guest's init-pipeline stall to
@@ -673,7 +673,7 @@ class VirtualApplicationManager @Inject constructor(
                     .getMethod("currentApplication").invoke(null)
                     as? android.app.Application ?: return@Thread
                 val out = java.io.File(
-                    hostApp.filesDir, "hijacktrace-${android.os.Process.myPid()}.log"
+                    hostApp.filesDir, DiagFiles.hijackTrace(android.os.Process.myPid())
                 )
                 val marks = listOf(
                     1_000L to "t+1s", 4_000L to "t+4s",

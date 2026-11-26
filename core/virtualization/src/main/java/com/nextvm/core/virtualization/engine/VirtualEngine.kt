@@ -40,6 +40,8 @@ import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.diagnostics.DiagnosticsHolder
 import com.nextvm.core.common.diagnostics.DiagnosticsRouter
 import com.nextvm.core.common.diagnostics.FileSink
@@ -980,7 +982,8 @@ class VirtualEngine @Inject constructor(
                     }
                     val filesDir = java.io.File(sandboxManager.getAppDir(instanceId), "files")
                     filesDir.mkdirs()
-                    java.io.File(filesDir, "v139-probe.log").appendText(
+                    DiagOutput.appendIn(
+                        filesDir, DiagFiles.v139Probe(),
                         "cached=${classLoaders.containsKey(instanceId)} " +
                         "nativeAvailable=${nativeHookBridge.isNativeAvailable()} " +
                         "nativeCount=${nativeHookBridge.getNativeRedirectCount()} " +

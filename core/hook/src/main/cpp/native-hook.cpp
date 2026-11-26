@@ -6654,6 +6654,8 @@ static std::atomic<int> g_java_io_open_logs{0};
 // v146：Java 层 open 的统计。guest 的 native 日志会被设备吞掉，
 // 所以把关键计数暴露给 Kotlin，由 DebugTrace 落盘到 debug-trace.log。
 static std::atomic<int> g_java_io_open_total{0};
+/** 容器自身诊断文件的 open 次数（不计入 total，也不占日志配额）。 */
+static std::atomic<int> g_java_io_diag_open{0};
 static std::atomic<int> g_java_io_open_fail{0};
 static std::atomic<int> g_java_io_translated{0};
 
@@ -6884,9 +6886,12 @@ static jobject hooked_java_linux_open(JNIEnv* env, jclass, jstring path,
         return nullptr;
     }
 
-    g_java_io_open_total.fetch_add(1);
-    // 容器自己的诊断文件不计入日志配额，否则会把真正想看的 guest 访问挤掉
-    if (!is_container_diag_path(real)) {
+    // 容器自己的诊断文件：单独计数，既不计入 total（否则指标里混入日志自身写入），
+    // 也不占日志配额（否则会把真正想看的 guest 访问挤掉）
+    if (is_container_diag_path(real)) {
+        g_java_io_diag_open.fetch_add(1);
+    } else {
+        g_java_io_open_total.fetch_add(1);
         int n = ++g_java_io_open_logs;
         if (n <= 200) {
             LOGI("JavaIo open%s: %s (flags=0x%x)",
@@ -7856,11 +7861,12 @@ Java_com_nextvm_core_hook_JavaIoHooks_nativeGetStats(
     (void)thiz;
     char buf[192];
     snprintf(buf, sizeof(buf),
-             "total=%d fail=%d translated=%d translate=%d",
+             "total=%d fail=%d translated=%d translate=%d diag=%d",
              g_java_io_open_total.load(),
              g_java_io_open_fail.load(),
              g_java_io_translated.load(),
-             g_java_io_translate.load() ? 1 : 0);
+             g_java_io_translate.load() ? 1 : 0,
+             g_java_io_diag_open.load());
     return env->NewStringUTF(buf);
 }
 
@@ -7874,6 +7880,7 @@ Java_com_nextvm_core_hook_JavaIoHooks_nativeResetStats(
     (void)env;
     (void)thiz;
     g_java_io_open_total.store(0);
+    g_java_io_diag_open.store(0);
     g_java_io_open_fail.store(0);
     g_java_io_translated.store(0);
 }

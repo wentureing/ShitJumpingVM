@@ -35,11 +35,7 @@ object DiagOutput {
         maxBytes: Long = DiagChannel.DEFAULT_MAX_BYTES,
     ): Boolean {
         val d = dir ?: return false
-        val ch = channels.computeIfAbsent(d.path + "/" + name) {
-            d.mkdirs()
-            DiagChannel(File(d, name), maxBytes)
-        }
-        return ch.append(text)
+        return appendIn(d, name, text, maxBytes)
     }
 
     /** 追加一行（自动补换行）。 */
@@ -48,6 +44,30 @@ object DiagOutput {
         text: String,
         maxBytes: Long = DiagChannel.DEFAULT_MAX_BYTES,
     ): Boolean = append(name, text + "\n", maxBytes)
+
+    /**
+     * 写入**显式目录**（主进程替某个 guest 写诊断时用），不影响全局 [dir]。
+     */
+    fun appendIn(
+        dir: File,
+        name: String,
+        text: String,
+        maxBytes: Long = DiagChannel.DEFAULT_MAX_BYTES,
+    ): Boolean {
+        val ch = channels.computeIfAbsent(dir.path + "/" + name) {
+            dir.mkdirs()
+            DiagChannel(File(dir, name), maxBytes)
+        }
+        return ch.append(text)
+    }
+
+    /** 写入显式目录的一行。 */
+    fun lineIn(
+        dir: File,
+        name: String,
+        text: String,
+        maxBytes: Long = DiagChannel.DEFAULT_MAX_BYTES,
+    ): Boolean = appendIn(dir, name, text + "\n", maxBytes)
 
     /** 覆盖写二进制/短文本（maps、dex 这类一次性快照）。 */
     fun overwrite(name: String, text: String): Boolean {

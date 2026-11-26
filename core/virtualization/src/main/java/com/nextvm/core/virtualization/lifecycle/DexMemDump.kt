@@ -1,5 +1,7 @@
 package com.nextvm.core.virtualization.lifecycle
 
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,11 +36,11 @@ object DexMemDump {
         Thread {
             try {
                 val pid = android.os.Process.myPid()
-                val log = File(filesDir, "dexmem-$pid.log")
+                val name = DiagFiles.dexMem(pid)
                 Thread.sleep(4_000)
-                runPass(pid, filesDir, log, "pass1(+4s)")
+                runPass(pid, filesDir, name, "pass1(+4s)")
                 Thread.sleep(22_000)
-                runPass(pid, filesDir, log, "pass2(+26s)")
+                runPass(pid, filesDir, name, "pass2(+26s)")
             } catch (_: Throwable) {
                 // diagnostics must never disturb the guest
             }
@@ -138,7 +140,7 @@ object DexMemDump {
         return false
     }
 
-    private fun runPass(pid: Int, dir: File, log: File, tag: String) {
+    private fun runPass(pid: Int, dir: File, logName: String, tag: String) {
         val welcome = "WelcomeClient".toByteArray(Charsets.US_ASCII)
         val cump = "CumpDoubleActiveManager".toByteArray(Charsets.US_ASCII)
         val sb = StringBuilder()
@@ -229,7 +231,7 @@ object DexMemDump {
             .append(" candidates=").append(candidates)
             .append(" written=").append(written).append("\n")
         try {
-            log.appendText(sb.toString())
+            DiagOutput.appendIn(dir, logName, sb.toString())
         } catch (_: Throwable) {
             // diagnostics must never disturb the guest
         }

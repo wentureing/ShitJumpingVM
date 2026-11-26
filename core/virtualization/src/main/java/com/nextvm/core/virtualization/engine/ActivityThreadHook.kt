@@ -9,6 +9,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Message
 import com.nextvm.core.common.AndroidCompat
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.findField
 import com.nextvm.core.common.runSafe
 import com.nextvm.core.model.VirtualIntentExtras
@@ -332,12 +334,10 @@ class ActivityThreadHook(
     /** v76: append one delivery-witness line to the shared trace file. */
     private fun traceDelivery(line: String) {
         try {
-            val f = java.io.File(
-                context.filesDir,
-                "startactivity-trace-" + android.os.Process.myPid() + ".log"
-            )
             synchronized(deliveryTraceLock) {
-                f.appendText(
+                DiagOutput.appendIn(
+                    context.filesDir,
+                    DiagFiles.startActivityTrace(android.os.Process.myPid()),
                     "[t=" + System.currentTimeMillis() + "] " +
                         "athook-delivery: " + line + "\n"
                 )

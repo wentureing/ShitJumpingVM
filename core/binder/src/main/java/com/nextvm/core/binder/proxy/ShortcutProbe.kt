@@ -4,6 +4,8 @@ import android.content.pm.ShortcutInfo
 import android.graphics.Bitmap
 import android.graphics.drawable.Icon
 import android.util.Log
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 
 /**
  * v110 probe, kept in v111 as a gate witness, rerouted in v112.
@@ -41,10 +43,11 @@ internal object ShortcutProbe {
             val app = Class.forName("android.app.ActivityThread")
                 .getMethod("currentApplication").invoke(null)
                 as? android.app.Application ?: return
-            val out = java.io.File(
-                app.filesDir, "shortcut-probe-${android.os.Process.myPid()}.log"
+            DiagOutput.appendIn(
+                app.filesDir,
+                DiagFiles.shortcutProbe(android.os.Process.myPid()),
+                "ShortcutProbe: $msg\n"
             )
-            out.appendText("ShortcutProbe: $msg\n")
         } catch (_: Throwable) {
             // Probe must never disturb the guest call.
         }

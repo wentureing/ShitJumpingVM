@@ -7,10 +7,11 @@ import android.os.IBinder
 import android.os.IInterface
 import android.os.Parcel
 import android.os.UserHandle
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.model.VirtualConstants
 import com.nextvm.core.model.VirtualIntentExtras
 import timber.log.Timber
-import java.io.File
 import java.lang.reflect.Field
 import java.io.FileDescriptor
 
@@ -596,17 +597,14 @@ class ActivityBinderWrap private constructor(
     private fun trace(msg: String) {
         Timber.tag(TAG).i("[%s] %s", serviceName, msg)
         try {
-            val f = File(
-                context.filesDir,
-                "startactivity-trace-" +
-                    android.os.Process.myPid() + ".log"
-            )
             synchronized(traceLock) {
                 // v76: wall-clock prefix on every trace line. launch99's
                 // file had no timestamps at all, so the one witnessed
                 // start could not be ordered against the logcat Risk
                 // lines (same wall clock) or the delivery records.
-                f.appendText(
+                DiagOutput.appendIn(
+                    context.filesDir,
+                    DiagFiles.startActivityTrace(android.os.Process.myPid()),
                     "[t=" + System.currentTimeMillis() + "] " +
                         "binderwrap[" + serviceName + "]: " + msg + "\n"
                 )

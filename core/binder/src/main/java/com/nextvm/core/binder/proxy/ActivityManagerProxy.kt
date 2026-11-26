@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.pm.ProviderInfo
 import android.os.Bundle
 import android.provider.Settings
+import com.nextvm.core.common.diagnostics.DiagFiles
+import com.nextvm.core.common.diagnostics.DiagOutput
 import com.nextvm.core.common.findField
 import com.nextvm.core.model.GmsServiceRouter
 import com.nextvm.core.model.VirtualApp
@@ -189,19 +191,16 @@ class ActivityManagerProxy(
         return result
     }
 
-    private val startTraceFile: java.io.File by lazy {
-        java.io.File(
-            context.filesDir,
-            "startactivity-trace-" + android.os.Process.myPid() + ".log"
-        )
-    }
+    private val startTraceLock = Any()
 
     private fun appendStartTrace(line: String) {
         try {
-            synchronized(startTraceFile) {
+            synchronized(startTraceLock) {
                 // v76: same wall-clock prefix as ActivityBinderWrap so
                 // every writer of this file shares one timeline.
-                startTraceFile.appendText(
+                DiagOutput.appendIn(
+                    context.filesDir,
+                    DiagFiles.startActivityTrace(android.os.Process.myPid()),
                     "[t=" + System.currentTimeMillis() + "] " + line + "\n"
                 )
             }
@@ -523,7 +522,8 @@ class ActivityManagerProxy(
                 "files"
             )
             dir.mkdirs()
-            java.io.File(dir, "v145-intent-probe.log").appendText(
+            DiagOutput.appendIn(
+                dir, DiagFiles.v145IntentProbe(),
                 "v145 $stage bundleKeys=${nestedKeys("bundle")} " +
                     "queryBundleKeys=" +
                     nestedKeys("_componentQueryBundle") + " " +
@@ -563,7 +563,8 @@ class ActivityManagerProxy(
                 "files"
             )
             dir.mkdirs()
-            java.io.File(dir, "v144-intent-probe.log").appendText(
+            DiagOutput.appendIn(
+                dir, DiagFiles.v144IntentProbe(),
                 "v144 $stage dataPresent=${data != null} " +
                     "scheme=${data?.scheme} host=${data?.host} " +
                     "extraKeys=${keys.joinToString(",")}\n"
