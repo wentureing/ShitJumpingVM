@@ -64,6 +64,15 @@ object DebugFlags {
     /** WebView dataDir 假值（白名单 guest，默认 true）。 */
     const val WEBVIEW_DATA_DIR_FAKE = "webviewDataDirFake"
 
+    /**
+     * guest 启动是否走 framework LoadedApk bind（默认 true）。
+     *
+     * 置 `0` 强制走 legacy bind —— 只用于采集 legacy 路径的启动链 golden
+     * （见 `docs/输出/变更/20261126-legacy-bind-golden.md`）。classloader 仍由 framework 建，
+     * 只让 VAM 收不到 LoadedApk。
+     */
+    const val FRAMEWORK_BIND = "frameworkBind"
+
     private class Cached(val value: Boolean, val at: Long)
 
     private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
@@ -113,7 +122,8 @@ object DebugFlags {
         JAVA_IO_TRANSLATE to true,
         VERBOSE to true,
         GUEST_REDIRECT to true,
-        WEBVIEW_DATA_DIR_FAKE to true
+        WEBVIEW_DATA_DIR_FAKE to true,
+        FRAMEWORK_BIND to true
     ).joinToString(", ") { (n, d) -> n + "=" + isOn(n, d) }
 
     private fun readProperty(key: String): String? = try {

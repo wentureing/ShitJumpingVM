@@ -1870,7 +1870,18 @@ class VirtualEngine @Inject constructor(
                     providerNames = providerNames,
                     providerAuthorities = providerAuthorities,
                     providerMetaData = providerMetaData,
-                    frameworkLoadedApk = frameworkLoadedApks[instanceId]
+                    frameworkLoadedApk = if (
+                        DebugFlags.isOn(DebugFlags.FRAMEWORK_BIND, true)
+                    ) {
+                        frameworkLoadedApks[instanceId]
+                    } else {
+                        // 采 legacy 路径样本用：classloader 仍由 framework 建，只让 VAM 手工装配
+                        com.nextvm.core.common.DebugTrace.event(
+                            "flags", "frameworkBind=false -> legacy bind"
+                        )
+                        GuestBreadcrumb.log("frameworkBind=false (flag) — legacy bind")
+                        null
+                    }
                 )
             } finally {
                 if (suspendSpoof) {
