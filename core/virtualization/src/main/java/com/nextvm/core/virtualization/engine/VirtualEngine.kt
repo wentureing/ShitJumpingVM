@@ -30,6 +30,7 @@ import com.nextvm.core.sandbox.SandboxManager
 import com.nextvm.core.sandbox.VirtualEnvironmentHook
 import com.nextvm.core.services.VirtualServiceManager
 import com.nextvm.core.virtualization.lifecycle.GuestBreadcrumb
+import com.nextvm.core.virtualization.lifecycle.GuestProcessStopper
 import com.nextvm.core.virtualization.lifecycle.VirtualApplicationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualConfigurationManager
 import com.nextvm.core.virtualization.lifecycle.VirtualResourceManager
@@ -748,6 +749,12 @@ class VirtualEngine @Inject constructor(
             updateAppState(instanceId) { it.copy(isRunning = false) }
             Timber.tag(TAG).i("Stopped app: $instanceId")
         }
+        // VM 的 killProcess 只改记录（ProcessState.KILLED），真实进程仍在 —— 必须真的杀，
+        // 否则下次 LAUNCH 复用旧进程、拿不到新的 bind（2026-11-26 采 golden 时踩到）。
+        val pkg = findApp(instanceId)?.packageName ?: instanceId.substringBefore('_')
+        val kill = runCatching { GuestProcessStopper.stop(pkg) }
+            .getOrElse { GuestProcessStopper.StopResult(emptyList(), 0) }
+        Timber.tag(TAG).i("Stopped app: $instanceId (pids=${kill.pids} killed=${kill.killed})")
         return VmResult.Success(Unit)
     }
 

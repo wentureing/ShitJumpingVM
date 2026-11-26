@@ -131,6 +131,21 @@ class CmdReceiver : BroadcastReceiver() {
                 Log.i(TAG, "UNINSTALL $pkg -> $r")
             }
 
+            ACTION_STOP -> {
+                // 真正停实例：逻辑终止 + 杀真实进程（否则下次 LAUNCH 复用旧进程、拿不到新 bind）
+                val instance = intent.getStringExtra("instance")
+                if (instance.isNullOrBlank()) {
+                    Log.w(TAG, "STOP: missing --es instance")
+                    return
+                }
+                val r = try {
+                    engine.stopApp(instance)
+                } catch (t: Throwable) {
+                    "failed ${t.javaClass.simpleName}: ${t.message}"
+                }
+                Log.i(TAG, "STOP $instance -> $r")
+            }
+
             ACTION_LIST -> {
                 try {
                     val apps = engine.getInstalledApps()
@@ -300,6 +315,7 @@ class CmdReceiver : BroadcastReceiver() {
         const val ACTION_LAUNCH = "com.nextvm.cmd.LAUNCH"
         const val ACTION_LAUNCH_ACTIVITY = "com.nextvm.cmd.LAUNCH_ACTIVITY"
         const val ACTION_UNINSTALL = "com.nextvm.cmd.UNINSTALL"
+        const val ACTION_STOP = "com.nextvm.cmd.STOP"
         const val ACTION_LIST = "com.nextvm.cmd.LIST"
 
         // --- 探针输出导出（P0-2）---
