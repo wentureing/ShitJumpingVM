@@ -148,6 +148,23 @@ object GuestDiagnosticsRegistration {
                         GuestBreadcrumb.log("cb onActivityDestroyed " + a.javaClass.name)
                 })
             GuestBreadcrumb.log("engine breadcrumb callbacks registered on " + app.javaClass.name)
+            // 运行期二次采样：maps/spoof 计数发生在 bind 之后（探针 N10 读 /proc/self/maps 时）。
+            // 只打两条（+5s / +20s），见 docs/架构/架构-native模块关系与技术路线.md §3。
+            Thread {
+                var elapsed = 0L
+                for ((atMs, label) in listOf(5_000L to "+5s", 20_000L to "+20s")) {
+                    val wait = atMs - elapsed
+                    if (wait > 0) Thread.sleep(wait)
+                    elapsed = atMs
+                    try {
+                        com.nextvm.core.common.DebugTrace.event(
+                            "native",
+                            "hook stats($label): " + nativeHookBridge.hookStats()
+                        )
+                    } catch (_: Throwable) {
+                    }
+                }
+            }.apply { isDaemon = true; name = "nv-native-stats" }.start()
             // v124: repeating login-button check on the main looper.
             // Tab switches inside one Activity never resume a new
             // Activity, so resume alone cannot see the 我的 tab's
