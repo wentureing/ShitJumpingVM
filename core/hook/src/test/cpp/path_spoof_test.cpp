@@ -46,6 +46,13 @@ std::string stripTrailingNewline(std::string s) {
     return s;
 }
 
+// 日志里每步都打印，超长值截断（maps 行动辄 120+ 字符）
+std::string shorten(const std::string& s) {
+    constexpr std::size_t kMax = 110;
+    if (s.size() <= kMax) return s;
+    return s.substr(0, kMax) + "…";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -128,6 +135,13 @@ int main(int argc, char** argv) {
                       << "       actual=" << actual;
             if (!why.empty()) std::cerr << "\n        (" << why << ")";
             std::cerr << "\n";
+        } else {
+            // 每一步都留痕：CI 日志能直接看出哪条用例固定了哪个行为
+            std::cout << "[ok] " << op;
+            if (pkg != "-") std::cout << " pkg=" << pkg;
+            std::cout << " input=" << shorten(input) << " -> " << shorten(actual);
+            if (!flag.empty()) std::cout << " [" << flag << "]";
+            std::cout << "\n";
         }
     }
 

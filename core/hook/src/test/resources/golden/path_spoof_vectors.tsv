@@ -11,7 +11,12 @@ rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1_split
 rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/lib/arm64/libfoo.so	/data/app/~~VmK8x2==/mark.via-VmK8x2==/lib/arm64/libfoo.so	
 rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/files/x.mht	/data/data/mark.via/files/x.mht	
 rewrite	com.sandbox.probe	/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_1.apk	/data/app/~~VmK8x2==/com.sandbox.probe-VmK8x2==/base.apk	
-rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk (deleted)	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk (deleted)	
+# 已知缺陷（历史，非 N1a 引入）：源码用 size>=11 / compare(len-11, 11, " (deleted)")，但 " (deleted)" 只有 10 字符
+#   → 剥离永不生效 → 带 (deleted) 的 **guest apk** 路径落进 "含 nextvm" 分支 = host_fallback（maps 里会被丢弃）。
+#   现状按下行固定；修它属行为变更（R3 类），届时要同时改 native-hook.cpp 的 sc_rewrite_fd_target（同样写 11）。
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk (deleted)	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	host_fallback
+# data 目录分支不受该缺陷影响（rest 自带 " (deleted)" 文本），所以后缀照常保留
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/files/x (deleted)	/data/data/mark.via/files/x (deleted)	
 rewrite	mark.via	/data/user/0/com.nextvm.app/files/native_user0.txt	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	host_fallback
 rewrite	mark.via	/system/lib64/libc.so	unchanged	
 rewrite	mark.via	/data/data/mark.via/files/x	unchanged	
