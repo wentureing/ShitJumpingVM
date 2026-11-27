@@ -19,7 +19,7 @@ static void expect(bool cond, const char* what) {
     }
 }
 
-static void expect_eq(const std::string& got, const std::string& want, const char* what) {
+[[maybe_unused]] static void expect_eq(const std::string& got, const std::string& want, const char* what) {
     ++g_checks;
     if (got != want) {
         std::printf("FAIL  %s  got=%s want=%s\n", what, got.c_str(), want.c_str());

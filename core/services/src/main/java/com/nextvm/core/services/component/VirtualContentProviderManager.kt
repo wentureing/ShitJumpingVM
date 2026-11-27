@@ -385,9 +385,6 @@ class VirtualContentProviderManager @Inject constructor() {
         // Same package always allowed
         if (record.packageName == callingPackage) return true
 
-        // Exported providers with no read permission are accessible
-        if (record.exported && record.readPermission == null) return true
-
         // TODO: Check against VirtualPermissionManager
         return record.exported
     }
@@ -400,7 +397,6 @@ class VirtualContentProviderManager @Inject constructor() {
 
         if (record.writePermission == null) return true
         if (record.packageName == callingPackage) return true
-        if (record.exported && record.writePermission == null) return true
 
         return record.exported
     }

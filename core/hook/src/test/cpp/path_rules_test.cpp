@@ -85,7 +85,7 @@ std::vector<std::string> splitTabs(const std::string& line) {
     return out;
 }
 
-std::vector<std::string> splitSpaces(const std::string& line) {
+[[maybe_unused]] std::vector<std::string> splitSpaces(const std::string& line) {
     std::vector<std::string> out;
     std::istringstream ss(line);
     std::string tok;
