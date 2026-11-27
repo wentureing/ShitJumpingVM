@@ -26,6 +26,8 @@
 
 // 纯逻辑（无 Android/JNI 依赖）：可被 host 侧 g++ 单测编译，见 docs/架构/架构-C++测试夹具设计.md
 #include "core/path_rules.h"
+// 路径伪装纯逻辑（N1a 搬出）；本文件只保留绑定全局状态的薄转发
+#include "core/path_spoof.h"
 // 诊断白名单（由 core/common/src/main/resources/diag_channels.tsv 生成，勿手改）
 #include "core/diag_channels.inc"
 #include <android/log.h>
@@ -253,18 +255,8 @@ static bool is_path_hidden(const char* path) {
  */
 static std::string redirect_path(const char* path) {
     if (path == nullptr || path[0] == '\0') return "";
-
-    std::string redirected = nextvm::path::redirect_path(g_path_redirects, std::string(path));
-    if (!redirected.empty()) return redirected;
-
-    // 等价族兜底：/data/user/0/ 与 /data/data/ 指向同一目录。
-    // 生产规则两侧都注册（setupAppRedirections），这里只防"只注册一条"的将来情况。
-    if (std::strncmp(path, "/data/user/0/", 13) == 0) {
-        std::string alt_path = std::string("/data/data/") + (path + 13);
-        return nextvm::path::redirect_path(g_path_redirects, alt_path);
-    }
-
-    return "";
+    // 规则匹配 + 等价族兜底都在 core/path_spoof.cpp（N1a 搬出）。
+    return nextvm::spoof::redirect_path_with_alias(g_path_redirects, std::string(path));
 }
 
 /**
@@ -288,136 +280,27 @@ enum ProcSpoofKind {
     PROC_SPOOF_STAT
 };
 
-// Keywords that betray the virtual environment in /proc/self/maps.
-// Shared by the fopen() and open()/openat() spoof paths.
+// 以下 5 个函数已搬到 core/path_spoof.cpp（N1a）。门面只绑全局状态（guest 包名）。
 static bool maps_line_visible(const char* line) {
-    static const char* kHiddenKeywords[] = {
-        "nextvm", "lsplant", "dobby", "bhook", "xhook", "substrate", "xposed"
-    };
-    for (const char* kw : kHiddenKeywords) {
-        if (strstr(line, kw) != nullptr) return false;
-    }
-    return true;
+    return nextvm::spoof::maps_line_visible(line);
 }
 
-// Synthetic "normal install" locations used to rewrite the guest's own
-// mappings in /proc/self/maps. A stock device shows the guest APK under
-// /data/app/~~<rand>==/<pkg>-<rand>==/base.apk with its extracted libs in
-// the sibling lib/arm64 directory — mirror that shape (constant tokens
-// are fine; what matters is that the paths stop betraying the virtual
-// layout and stop containing the host's package name).
 static std::string synthetic_apk_path() {
-    return "/data/app/~~VmK8x2==/" + g_spoofed_package_name + "-VmK8x2==/base.apk";
+    return nextvm::spoof::synthetic_apk_path(g_spoofed_package_name);
 }
 
 static std::string synthetic_lib_path(const std::string& file_name) {
-    return "/data/app/~~VmK8x2==/" + g_spoofed_package_name +
-           "-VmK8x2==/lib/arm64/" + file_name;
+    return nextvm::spoof::synthetic_lib_path(g_spoofed_package_name, file_name);
 }
 
-/**
- * Rewrite a filesystem path that betrays the virtual layout into its
- * stock-install equivalent. Shared by the maps transform and by the
- * readlink result rewriting (fd symlink targets). Returns false when
- * the path needs no rewrite. When the path belongs to the host/engine
- * itself (no guest-side equivalent exists), *host_fallback is set and
- * `out` receives the synthetic APK path as a plausible stand-in —
- * callers that present listings (maps) should drop such entries
- * instead, callers that must return a path (readlink) use the stand-in.
- */
 static bool rewrite_virtual_path(const std::string& path, std::string& out,
                                  bool* host_fallback = nullptr) {
-    if (host_fallback != nullptr) *host_fallback = false;
-    std::string core = path;
-    std::string suffix;
-    if (core.size() >= 11 &&
-        core.compare(core.size() - 11, 11, " (deleted)") == 0) {
-        core.erase(core.size() - 11);
-        suffix = " (deleted)";
-    }
-
-    // Guest APK files: base + split APKs (virtual storage names splits
-    // "<instanceId>_split_config.<...>.apk"; stock form is the plain
-    // split file name next to base.apk).
-    if (core.find("/files/virtual/apks/") != std::string::npos &&
-        core.size() >= 4 && core.compare(core.size() - 4, 4, ".apk") == 0) {
-        std::string fname = core.substr(core.find_last_of('/') + 1);
-        size_t split_pos = fname.find("split_");
-        if (fname.find("_split_") != std::string::npos &&
-            split_pos != std::string::npos) {
-            out = "/data/app/~~VmK8x2==/" + g_spoofed_package_name +
-                  "-VmK8x2==/" + fname.substr(split_pos) + suffix;
-        } else {
-            out = synthetic_apk_path() + suffix;
-        }
-        return true;
-    }
-
-    // Guest data tree: extracted libs go to the synthetic lib dir,
-    // everything else mirrors under /data/data/<pkg>/.
-    const std::string data_marker = "/files/virtual/data/";
-    size_t data_pos = core.find(data_marker);
-    if (data_pos != std::string::npos) {
-        size_t inst_end = core.find('/', data_pos + data_marker.size());
-        if (inst_end != std::string::npos) {
-            std::string rest = core.substr(inst_end + 1);
-            if (rest.compare(0, 4, "lib/") == 0) {
-                out = synthetic_lib_path(
-                    rest.substr(rest.find_last_of('/') + 1)) + suffix;
-            } else {
-                out = "/data/data/" + g_spoofed_package_name + "/" + rest +
-                      suffix;
-            }
-            return true;
-        }
-    }
-
-    // Anything else naming the host app is the engine/host itself.
-    if (core.find("nextvm") != std::string::npos) {
-        if (host_fallback != nullptr) *host_fallback = true;
-        out = synthetic_apk_path() + suffix;
-        return true;
-    }
-    return false;
+    return nextvm::spoof::rewrite_virtual_path(g_spoofed_package_name, path, out,
+                                               host_fallback);
 }
 
-/**
- * Transform one /proc/self/maps line for the spoofed view.
- * Returns false if the line must be dropped; otherwise fills `out`.
- *
- * v1 of this spoof simply dropped every line mentioning the host —
- * including the guest's OWN apk/lib mappings (they live under the
- * host's data dir), so a shell locating itself or its APK in maps
- * found nothing at all. v2 rewrites the guest's own paths to a
- * plausible stock-install layout and only drops lines that belong to
- * the host app / hook engine itself.
- */
 static bool transform_maps_line(const char* line, std::string& out) {
-    const char* slash = strchr(line, '/');
-    if (slash != nullptr) {
-        std::string prefix(line, static_cast<size_t>(slash - line));
-        std::string core(slash);
-        while (!core.empty() && (core.back() == '\n' || core.back() == '\r')) {
-            core.pop_back();
-        }
-
-        std::string rewritten;
-        bool host_fallback = false;
-        if (rewrite_virtual_path(core, rewritten, &host_fallback)) {
-            // Host/engine mappings have no guest-side equivalent; a
-            // stock process simply has no such lines — drop them.
-            if (host_fallback) return false;
-            out = prefix + rewritten + "\n";
-            return true;
-        }
-    }
-
-    // Hook-framework keywords anywhere in the line (also covers
-    // [anon:...] mapping names) — drop.
-    if (!maps_line_visible(line)) return false;
-
-    out = line;
-    return true;
+    return nextvm::spoof::transform_maps_line(g_spoofed_package_name, line, out);
 }
 
 static std::string build_spoofed_maps() {

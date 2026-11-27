@@ -1,0 +1,30 @@
+# N1a 路径伪装 golden 向量（host g++ + 真机共用同一份判据）
+# op	guest_pkg	input	expected	flag
+# expected 约定：rewrite/redirect_alias 用 "unchanged" 表示原样；hidden 用 keep/drop；transform 用 keep/drop 或改写后的行
+# flag 约定：rewrite 的 host_fallback 表示"这是容器自身路径，没有 guest 等价物"
+synthetic_apk	mark.via	-	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	
+synthetic_lib	mark.via	libfoo.so	/data/app/~~VmK8x2==/mark.via-VmK8x2==/lib/arm64/libfoo.so	
+synthetic_apk	com.sandbox.probe	-	/data/app/~~VmK8x2==/com.sandbox.probe-VmK8x2==/base.apk	
+synthetic_lib	com.sandbox.probe	libprobe.so	/data/app/~~VmK8x2==/com.sandbox.probe-VmK8x2==/lib/arm64/libprobe.so	
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1_split_config.arm64.apk	/data/app/~~VmK8x2==/mark.via-VmK8x2==/split_config.arm64.apk	
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/lib/arm64/libfoo.so	/data/app/~~VmK8x2==/mark.via-VmK8x2==/lib/arm64/libfoo.so	
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/files/x.mht	/data/data/mark.via/files/x.mht	
+rewrite	com.sandbox.probe	/data/user/0/com.nextvm.app/files/virtual/apks/com.sandbox.probe_1.apk	/data/app/~~VmK8x2==/com.sandbox.probe-VmK8x2==/base.apk	
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk (deleted)	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk (deleted)	
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/native_user0.txt	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	host_fallback
+rewrite	mark.via	/system/lib64/libc.so	unchanged	
+rewrite	mark.via	/data/data/mark.via/files/x	unchanged	
+hidden	-	7f0000000000-7f0000001000 r--p 00000000 fd:00 123 /data/app/x/libnextvm-native.so	drop	
+hidden	-	7f0000000000-7f0000001000 r--p 00000000 fd:00 123 /data/app/x/libDexHelper.so	keep	
+hidden	-	7f0000000000-7f0000001000 rw-p 00000000 00:00 0 [anon:lsplant]	drop	
+hidden	-	7f0000000000-7f0000001000 r-xp 00000000 fd:00 9 /system/lib64/libc.so	keep	
+transform	mark.via	7f0000000000-7f0000001000 r--p 00000000 fd:00 123 /data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk	7f0000000000-7f0000001000 r--p 00000000 fd:00 123 /data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	
+transform	mark.via	7f0000000000-7f0000001000 r-xp 00000000 fd:00 9 /data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/lib/arm64/libfoo.so	7f0000000000-7f0000001000 r-xp 00000000 fd:00 9 /data/app/~~VmK8x2==/mark.via-VmK8x2==/lib/arm64/libfoo.so	
+transform	mark.via	7f0000000000-7f0000001000 r--p 00000000 fd:00 9 /data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/files/x.mht	7f0000000000-7f0000001000 r--p 00000000 fd:00 9 /data/data/mark.via/files/x.mht	
+transform	mark.via	7f0000000000-7f0000001000 r--p 00000000 fd:00 7 /data/user/0/com.nextvm.app/files/libnextvm-native.so	drop	
+transform	mark.via	7f0000000000-7f0000001000 r-xp 00000000 fd:00 9 /system/lib64/libc.so	keep	
+redirect_alias	mark.via	/data/user/0/mark.via/files/a	/sandbox/i1/files/a	
+redirect_alias	mark.via	/data/data/mark.via/files/a	/sandbox/i1/files/a	
+redirect_alias	mark.via	/sdcard/Download/a	/sandbox/i1/sdcard/Download/a	
+redirect_alias	mark.via	/system/bin/sh	unchanged	
