@@ -1022,6 +1022,12 @@ class NativeHookBridge @Inject constructor() {
     /** 最近 N 条「命中翻译 / 失败」的 fs 记录（多行）。 */
     external fun nativeGetFsRecent(): String?
 
+    /** 关键过程统计（插桩）：GOT patch / 延迟 patch / /proc spoof 的计数。 */
+    external fun nativeGetHookStats(): String?
+
+    /** 关键过程统计的 Kotlin 包装：失败不抛，返回 n/a。 */
+    fun hookStats(): String = runCatching { nativeGetHookStats() }.getOrNull() ?: "n/a"
+
     external fun nativeResetFsStats()
 
     /** Set up /proc/self spoofing at native level. */

@@ -106,6 +106,22 @@ static std::unordered_map<std::string, std::string> g_property_spoofs;
 // Hidden paths: paths that should appear non-existent
 static std::unordered_set<std::string> g_hidden_paths;
 
+// ==================== 关键过程统计（插桩） ====================
+// 只做原子计数：热路径不写日志，取值走 JNI（nativeGetHookStats）→ DebugTrace。
+// 说明见 docs/架构/架构-native模块关系与技术路线.md §3。
+struct NativeHookStats {
+    std::atomic<int> libs_scanned{0};
+    std::atomic<int> libs_patched{0};
+    std::atomic<int> libs_skipped_self{0};
+    std::atomic<int> libs_skipped_system{0};
+    std::atomic<int> late_passes{0};
+    std::atomic<int> late_libs_added{0};
+    std::atomic<int> spoof_calls{0};
+    std::atomic<int> maps_lines{0};
+    std::atomic<int> maps_hidden{0};
+};
+static NativeHookStats g_native_stats;
+
 // /proc/self spoofing
 static int g_spoofed_pid = -1;
 static std::string g_spoofed_package_name;
@@ -436,8 +452,13 @@ static std::string build_spoofed_maps() {
     }
     char line[4096];
     while (fgets(line, sizeof(line), in)) {
+        g_native_stats.maps_lines.fetch_add(1, std::memory_order_relaxed);
         std::string out;
-        if (transform_maps_line(line, out)) result += out;
+        if (transform_maps_line(line, out)) {
+            result += out;
+        } else {
+            g_native_stats.maps_hidden.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     fclose(in);
     return result;
@@ -627,6 +648,7 @@ static int make_proc_spoof_fd(ProcSpoofKind kind, const char* src_path = nullptr
     }
 
     if (fd >= 0) {
+        g_native_stats.spoof_calls.fetch_add(1, std::memory_order_relaxed);
         static int logged_cmdline = 0, logged_maps = 0, logged_comm = 0, logged_status = 0, logged_stat = 0;
         int* counter = &logged_cmdline;
         const char* name = "cmdline";
@@ -2055,6 +2077,7 @@ static void v90b_read_bss(const char* name, uintptr_t base) {
  */
 static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, void* /*data*/) {
     if (info->dlpi_name == nullptr) return 0;
+    g_native_stats.libs_scanned.fetch_add(1, std::memory_order_relaxed);
 
     // v90: INIT 后 BSS 读取。位置注意：必须放在 g_patched_bases
     // early-return 之前——窗口块在 early-return 之后、只跑首见，
@@ -2076,7 +2099,10 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
 
     // Skip empty names (main executable) and our own library
     if (name[0] == '\0') return 0;
-    if (strstr(name, "libnextvm") != nullptr) return 0;
+    if (strstr(name, "libnextvm") != nullptr) {
+        g_native_stats.libs_skipped_self.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
 
     // v87: open the mmap-probe window when a shell loader lib first
     // appears in the link map. Set before every early return below so
@@ -2103,11 +2129,20 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
     }
 
     // Skip the linker itself
-    if (strstr(name, "linker") != nullptr) return 0;
+    if (strstr(name, "linker") != nullptr) {
+        g_native_stats.libs_skipped_system.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
 
     // Skip vDSO and other kernel-mapped objects (no valid GOT to patch)
-    if (strstr(name, "vdso") != nullptr) return 0;
-    if (strstr(name, "[vdso]") != nullptr) return 0;
+    if (strstr(name, "vdso") != nullptr) {
+        g_native_stats.libs_skipped_system.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
+    if (strstr(name, "[vdso]") != nullptr) {
+        g_native_stats.libs_skipped_system.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
 
     // v57: never GOT-patch the CM guest's SecNeo mini-linker stub for
     // file I/O — its post-load file/JNI plumbing must stay pristine
@@ -2136,13 +2171,20 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
             patch_library_got(info->dlpi_addr, name, dynamic, "mmap");
             patch_library_got(info->dlpi_addr, name, dynamic, "mprotect");
         }
+        g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
         if (info->dlpi_addr != 0) g_patched_bases.insert(info->dlpi_addr);
         return 0;
     }
 
     // Skip libraries that commonly have RELRO-protected GOTs causing issues
-    if (strstr(name, "libart.so") != nullptr) return 0;
-    if (strstr(name, "libhwbinder") != nullptr) return 0;
+    if (strstr(name, "libart.so") != nullptr) {
+        g_native_stats.libs_skipped_system.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
+    if (strstr(name, "libhwbinder") != nullptr) {
+        g_native_stats.libs_skipped_system.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
 
     // Find PT_DYNAMIC segment
     const ElfW(Dyn)* dynamic = nullptr;
@@ -2158,6 +2200,7 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
         patch_library_got(info->dlpi_addr, name, dynamic);
     }
 
+    g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
     if (info->dlpi_addr != 0) g_patched_bases.insert(info->dlpi_addr);
 
     return 0;
@@ -2261,6 +2304,9 @@ static void patch_newly_loaded_libraries() {
         LOGI("Late-patch: GOT hooks applied to %zu newly loaded librar%s",
              added, added == 1 ? "y" : "ies");
     }
+    g_native_stats.late_passes.fetch_add(1, std::memory_order_relaxed);
+    g_native_stats.late_libs_added.fetch_add(
+        static_cast<int>(added), std::memory_order_relaxed);
 
     sc_refresh_modules();
     in_pass = false;
@@ -2321,6 +2367,28 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeGetFsStats(
              g_fs_rename_stats.total.load(), g_fs_rename_stats.translated.load(),
              g_fs_rename_stats.fail.load(),
              g_fs_logs.load());
+    return env->NewStringUTF(buf);
+}
+
+/* 关键过程统计（插桩）：一次一行 key=value，供 Kotlin 落 debug-trace.log。 */
+JNIEXPORT jstring JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeGetHookStats(
+    JNIEnv* env, jobject thiz)
+{
+    (void)thiz;
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "libs=%d patched=%d skipped_self=%d skipped_system=%d "
+             "late_passes=%d late_libs=%d spoof=%d maps_lines=%d maps_hidden=%d",
+             g_native_stats.libs_scanned.load(),
+             g_native_stats.libs_patched.load(),
+             g_native_stats.libs_skipped_self.load(),
+             g_native_stats.libs_skipped_system.load(),
+             g_native_stats.late_passes.load(),
+             g_native_stats.late_libs_added.load(),
+             g_native_stats.spoof_calls.load(),
+             g_native_stats.maps_lines.load(),
+             g_native_stats.maps_hidden.load());
     return env->NewStringUTF(buf);
 }
 

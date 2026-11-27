@@ -235,6 +235,11 @@ class VirtualApplicationManager @Inject constructor(
                         "recent opens after bind:\n" +
                             (com.nextvm.core.hook.JavaIoHooks.recent() ?: "n/a")
                     )
+                    // 关键过程统计（插桩）：GOT patch / 延迟 patch / /proc spoof 计数
+                    com.nextvm.core.common.DebugTrace.event(
+                        "native",
+                        "hook stats: " + nativeHookBridge.hookStats()
+                    )
                     scheduleGuestStackDumps(packageName)
                     scheduleHijackTrace(packageName)
                     GuestBindBackgroundTasks.scheduleObservers(packageName, fwApp.filesDir)
@@ -328,6 +333,11 @@ class VirtualApplicationManager @Inject constructor(
             scheduleGuestStackDumps(packageName)
             scheduleHijackTrace(packageName)
             GuestBindBackgroundTasks.scheduleObservers(packageName, application.filesDir)
+            // 关键过程统计（插桩）：legacy 路径同样落一份，便于两条路径对比
+            com.nextvm.core.common.DebugTrace.event(
+                "native",
+                "hook stats: " + nativeHookBridge.hookStats()
+            )
             return application
 
         } catch (e: Exception) {
