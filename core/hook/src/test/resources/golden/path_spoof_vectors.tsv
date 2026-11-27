@@ -33,3 +33,16 @@ redirect_alias	mark.via	/data/user/0/mark.via/files/a	/sandbox/i1/files/a
 redirect_alias	mark.via	/data/data/mark.via/files/a	/sandbox/i1/files/a	
 redirect_alias	mark.via	/sdcard/Download/a	/sandbox/i1/sdcard/Download/a	
 redirect_alias	mark.via	/system/bin/sh	unchanged	
+# ---- 完善：缺陷的边界与其他分支（每条都在固定一个具体行为）----
+# lib 分支不依赖 (deleted) 剥离：后缀是 rest 文本的一部分，所以照常保留
+rewrite	mark.via	/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/lib/arm64/libfoo.so (deleted)	/data/app/~~VmK8x2==/mark.via-VmK8x2==/lib/arm64/libfoo.so (deleted)	
+# 缺陷在 maps 层的后果：带 (deleted) 的 guest apk 行被判 host_fallback → 整行丢弃
+transform	mark.via	7f0000000000-7f0000001000 r--p 00000000 fd:00 123 /data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk (deleted)	drop	
+# 任何 /files/virtual/apks/*.apk 都映射到**当前 spoof 包名**的合成路径（maps 里不应出现别的 guest 的虚拟路径）
+rewrite	mark.via	/data/user/0/com.other.app/files/virtual/apks/x.apk	/data/app/~~VmK8x2==/mark.via-VmK8x2==/base.apk	
+# 不含 virtual 标记、也不含 nextvm 的路径一律不动（外置存储真路径族）
+rewrite	mark.via	/data/media/0/Android/data/mark.via/files/x	unchanged	
+# 无 '/' 的 maps 行（[anon:] 之类的映射名）走关键字过滤分支
+transform	mark.via	7f0000000000-7f0000001000 rw-p 00000000 00:00 0 [anon:nextvm]	drop	
+# 空行不得被当成"不可见"丢掉
+hidden	-		keep	

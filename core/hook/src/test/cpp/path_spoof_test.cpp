@@ -69,6 +69,52 @@ int main(int argc, char** argv) {
     const nextvm::path::RuleTable rules = makeRules();
     int total = 0;
     int failed = 0;
+
+    // 不变量：与向量文件无关的**结构性约束**，防止"向量只覆盖已想到的输入"。
+    auto checkInv = [&](const char* name, bool ok, const std::string& detail) {
+        ++total;
+        if (ok) {
+            std::cout << "[ok] invariant " << name << " " << shorten(detail) << "\n";
+        } else {
+            ++failed;
+            std::cerr << "[FAIL] invariant " << name << " " << detail << "\n";
+        }
+    };
+
+    {
+        // 合成 apk 路径：必须带 guest 包名、不得泄漏容器特征（nextvm）
+        const std::string apk = nextvm::spoof::synthetic_apk_path("mark.via");
+        checkInv("synthetic_apk_uses_pkg",
+                 apk.find("mark.via") != std::string::npos,
+                 apk);
+        checkInv("synthetic_apk_no_host_leak",
+                 apk.find("nextvm") == std::string::npos,
+                 apk);
+
+        // 合成 lib 路径：包名 + lib/arm64/<file> 两段都要在
+        const std::string lib = nextvm::spoof::synthetic_lib_path("com.sandbox.probe", "x.so");
+        checkInv("synthetic_lib_shape",
+                 lib.find("com.sandbox.probe") != std::string::npos &&
+                     lib.size() > 9 &&
+                     lib.compare(lib.size() - 9, 9, "/lib/arm64/x.so") == 0,
+                 lib);
+
+        // 空串 maps 行不得被丢弃（否则 maps 尾部/异常行会被吞）
+        checkInv("maps_empty_line_visible", nextvm::spoof::maps_line_visible(""), "(empty)");
+
+        // 空路径不改写，且不写 out（避免调用方拿到半成品）
+        std::string out = "sentinel";
+        const bool rewritten = nextvm::spoof::rewrite_virtual_path("mark.via", "", out);
+        checkInv("rewrite_empty_path_unchanged",
+                 !rewritten && out == "sentinel", out);
+
+        // 空规则表 → 即使命中 /data/user/0 前缀也不得凭空造出结果
+        const nextvm::path::RuleTable empty;
+        checkInv("alias_empty_rules_miss",
+                 nextvm::spoof::redirect_path_with_alias(empty, "/data/user/0/mark.via/x").empty(),
+                 "(empty table)");
+    }
+
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') continue;
