@@ -1028,6 +1028,12 @@ class NativeHookBridge @Inject constructor() {
     /** 关键过程统计的 Kotlin 包装：失败不抛，返回 n/a。 */
     fun hookStats(): String = runCatching { nativeGetHookStats() }.getOrNull() ?: "n/a"
 
+    /** N2-C：bind 之后主动触发一次延迟 patch（修复 L6 触发链断裂）。 */
+    external fun nativePatchNewlyLoaded(): Boolean
+
+    /** 包装：未就绪/native 不可用时返回 false，不抛。 */
+    fun patchNewlyLoaded(): Boolean = runCatching { nativePatchNewlyLoaded() }.getOrDefault(false)
+
     external fun nativeResetFsStats()
 
     /** Set up /proc/self spoofing at native level. */

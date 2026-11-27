@@ -2279,6 +2279,19 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeGetHookStats(
     return env->NewStringUTF(buf);
 }
 
+/* N2-C 第 2 步：bind 之后由 Kotlin 侧主动触发一次延迟 patch（修复 L6 触发链断裂）。
+ * 返回 true 表示已执行；实际新增库数见 hook stats 的 late_libs。 */
+JNIEXPORT jboolean JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativePatchNewlyLoaded(
+    JNIEnv* env, jobject thiz)
+{
+    (void)env;
+    (void)thiz;
+    if (!g_initialized) return JNI_FALSE;
+    patch_newly_loaded_libraries();
+    return JNI_TRUE;
+}
+
 /* 最近 N 条「命中翻译 / 失败」的记录，每行：op err=<n> from -> to */
 JNIEXPORT jstring JNICALL
 Java_com_nextvm_core_hook_NativeHookBridge_nativeGetFsRecent(

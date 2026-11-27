@@ -157,9 +157,13 @@ object GuestDiagnosticsRegistration {
                     if (wait > 0) Thread.sleep(wait)
                     elapsed = atMs
                     try {
+                        // N2-C 第 2 步：先主动触发一次延迟 patch（L6 —— bind 之后
+                        // System.loadLibrary 加载的 app 库本来永远补不上），再取统计。
+                        val patched = nativeHookBridge.patchNewlyLoaded()
                         com.nextvm.core.common.DebugTrace.event(
                             "native",
-                            "hook stats($label): " + nativeHookBridge.hookStats()
+                            "hook stats($label): patchedNewly=$patched " +
+                                nativeHookBridge.hookStats()
                         )
                     } catch (_: Throwable) {
                     }
