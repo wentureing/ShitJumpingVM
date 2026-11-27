@@ -1,0 +1,22 @@
+# 统一换行符：仓库内文本一律 LF（CI 在 Linux 上跑，golden/TSV 要能逐字节比较）
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+gradlew.bat text eol=crlf
+
+# gradle wrapper 脚本必须 LF
+gradlew   text eol=lf
+
+# 二进制：不做任何转换
+*.jar   binary
+*.apk   binary
+*.aar   binary
+*.so    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.zip   binary
+*.keystore binary
