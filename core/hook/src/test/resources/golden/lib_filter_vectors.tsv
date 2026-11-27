@@ -1,0 +1,24 @@
+# N2-A 库过滤判定 golden 向量（host g++ 与真机共用同一份判据）
+# lib_name	system_libs_enabled	decision	reason
+# 空 lib_name 用 <null> 表示 C 的 nullptr（与"空字符串"区分）
+libnextvm-native.so	0	skip	container_self
+/data/app/~~abc==/com.nextvm.app-xyz==/lib/arm64/libnextvm-native.so	0	skip	container_self
+/data/app/~~abc==/com.nextvm.app-xyz==/lib/arm64/libfoo.so	0	skip	container_self
+/data/user/0/com.nextvm.app/files/virtual/data/mark.via_1/lib/arm64/libfoo.so	0	skip	container_self
+libGLESv2_adreno.so	0	skip	graphics_stack
+libEGL_adreno.so	0	skip	graphics_stack
+eglSubDriverAdreno.so	0	skip	graphics_stack
+libvulkan.so	0	skip	graphics_stack
+vulkan.adreno.so	0	skip	graphics_stack
+libllvm-glnext.so	0	skip	graphics_stack
+/system/lib64/libGLESv2_adreno.so	1	skip	graphics_stack
+/data/app/~~x==/mark.via-y==/lib/arm64/libfoo.so	0	patch	app_lib
+/data/user/0/mark.via/lib/arm64/libfoo.so	0	patch	app_lib
+/virtual/lib/libfoo.so	0	patch	app_lib
+/system/lib64/libc.so	0	skip	system_lib
+/system/lib64/libc.so	1	patch	system_lib
+/vendor/lib64/libfoo.so	0	skip	system_lib
+/apex/com.android.art/lib64/libart.so	0	skip	system_lib
+libDexHelper.so	0	skip	system_lib
+libsqlite.so	1	patch	system_lib
+<null>	0	patch	none

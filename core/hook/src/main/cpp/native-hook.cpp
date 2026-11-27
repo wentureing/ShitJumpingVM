@@ -28,6 +28,8 @@
 #include "core/path_rules.h"
 // 路径伪装纯逻辑（N1a 搬出）；本文件只保留绑定全局状态的薄转发
 #include "core/path_spoof.h"
+// 库级 patch 作用域判定（N2-A 搬出）；本文件只保留日志文本与计数
+#include "core/lib_filter.h"
 // 诊断白名单（由 core/common/src/main/resources/diag_channels.tsv 生成，勿手改）
 #include "core/diag_channels.inc"
 #include <android/log.h>
@@ -1696,61 +1698,36 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
     }
 
     // ============ Hook 作用域过滤（sandboxsensor）============
-    // 原则：**永远不 hook 容器自身的调用**，因为容器的路径重定向实现本身依赖
-    // 真实的 open/stat/fopen；一旦被自己拦截，宿主自身 IO 会被错误改写。
-    //
-    // 优先级从高到低（先排除，再决定是否 patch）：
+    // 判据已抽到 core/lib_filter.cpp（N2-A）：四级优先级与关键词逐字照搬，
+    // 本处只负责**日志文本**与早退；计数与 patch 动作不变。
     //   1) 容器自身（宿主 APK 的 lib 目录、libnextvm-native.so）  -> 永不 patch
     //   2) 图形栈（Adreno EGL/GLES/Vulkan 驱动、libllvm-glnext）  -> 永不 patch
-    //      实测 patch 后驱动编译 shader 时拿不到正确缓存/属性 -> abort
     //   3) 应用/沙箱库（/data/app、/data/user、/virtual）          -> patch
     //   4) 其他系统库（/system、/apex、/vendor 的非图形库）        -> 由宏控制
-    //      NS_HOOK_SYSTEM_LIBS=0（默认）：不 patch，避免改坏系统库的运行前提
-    //      NS_HOOK_SYSTEM_LIBS=1：patch，用于覆盖"系统库代应用访问文件"
-    //      （libsqlite / libmediandk / libwebviewchromium 等），需逐个验证
 #ifndef NS_HOOK_SYSTEM_LIBS
 #define NS_HOOK_SYSTEM_LIBS 0
 #endif
 
     if (lib_name != nullptr) {
-        // 1) 容器自身：宿主包名下的库 或 容器 native 引擎
-        const bool is_self =
-            strstr(lib_name, "com.nextvm.app") != nullptr ||
-            strstr(lib_name, "libnextvm") != nullptr;
-        if (is_self) {
-            LOGI("GOT patch skipped (container self): %s", lib_name);
-            return;
+        const nextvm::libfilter::Verdict verdict =
+            nextvm::libfilter::classify_lib(lib_name, NS_HOOK_SYSTEM_LIBS != 0);
+        switch (verdict.reason) {
+            case nextvm::libfilter::Reason::kContainerSelf:
+                LOGI("GOT patch skipped (container self): %s", lib_name);
+                break;
+            case nextvm::libfilter::Reason::kGraphicsStack:
+                LOGI("GOT patch skipped (graphics stack): %s", lib_name);
+                break;
+            case nextvm::libfilter::Reason::kSystemLib:
+                if (verdict.decision == nextvm::libfilter::Decision::kSkip) {
+                    LOGI("GOT patch skipped (system lib, NS_HOOK_SYSTEM_LIBS=0): %s",
+                         lib_name);
+                }
+                break;
+            default:
+                break;
         }
-
-        // 2) 图形栈：patch 后会导致 shader 编译 abort
-        const bool is_graphics =
-            strstr(lib_name, "libGLES") != nullptr ||
-            strstr(lib_name, "libEGL") != nullptr ||
-            strstr(lib_name, "eglSubDriver") != nullptr ||
-            strstr(lib_name, "libvulkan") != nullptr ||
-            strstr(lib_name, "vulkan.adreno") != nullptr ||
-            strstr(lib_name, "libllvm-glnext") != nullptr;
-        if (is_graphics) {
-            LOGI("GOT patch skipped (graphics stack): %s", lib_name);
-            return;
-        }
-
-        // 3) 应用/沙箱库：始终 patch
-        const bool is_app_lib =
-            strstr(lib_name, "/data/app/") != nullptr ||
-            strstr(lib_name, "/data/user/") != nullptr ||
-            strstr(lib_name, "/virtual/") != nullptr;
-        if (is_app_lib) {
-            // fallthrough：继续 patch
-        } else {
-            // 4) 其余系统库：由编译期宏决定
-#if NS_HOOK_SYSTEM_LIBS
-            // 允许 patch 系统库（用于覆盖系统库代访问场景），但仍跳过图形栈
-#else
-            LOGI("GOT patch skipped (system lib, NS_HOOK_SYSTEM_LIBS=0): %s", lib_name);
-            return;
-#endif
-        }
+        if (verdict.decision == nextvm::libfilter::Decision::kSkip) return;
     }
 
     if (symtab == nullptr || strtab == nullptr) return;

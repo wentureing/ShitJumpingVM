@@ -14,6 +14,7 @@ add_library(nextvm-native SHARED
     core/path_rules.cpp
     core/path_pattern.cpp
     core/path_spoof.cpp
+    core/lib_filter.cpp
 )
 
 # Link against Android log + dynamic linker
