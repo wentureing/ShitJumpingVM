@@ -93,11 +93,13 @@ int main(int argc, char** argv) {
                  apk);
 
         // 合成 lib 路径：包名 + lib/arm64/<file> 两段都要在
+        // 注意：长度不手数 —— 直接用期待后缀的 size()，避免同类"数错常数"的坑
         const std::string lib = nextvm::spoof::synthetic_lib_path("com.sandbox.probe", "x.so");
+        const std::string lib_tail = "/lib/arm64/x.so";
         checkInv("synthetic_lib_shape",
                  lib.find("com.sandbox.probe") != std::string::npos &&
-                     lib.size() > 9 &&
-                     lib.compare(lib.size() - 9, 9, "/lib/arm64/x.so") == 0,
+                     lib.size() >= lib_tail.size() &&
+                     lib.compare(lib.size() - lib_tail.size(), lib_tail.size(), lib_tail) == 0,
                  lib);
 
         // 空串 maps 行不得被丢弃（否则 maps 尾部/异常行会被吞）
