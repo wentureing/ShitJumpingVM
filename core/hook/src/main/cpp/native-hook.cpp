@@ -3940,9 +3940,11 @@ int sc_rewrite_fd_target(const char* in, char* out, int cap) {
     while (in[clen] && clen < 500) { core[clen] = in[clen]; clen++; }
     core[clen] = 0;
     bool deleted = false;
-    if (clen >= 11 && sc_streq(core + clen - 11, " (deleted)")) {
-        core[clen - 11] = 0;
-        clen -= 11;
+    // 长度来自 core/path_spoof.h 的常量：历史上这里手写成 11（实际 10 字符），剥离永不生效。
+    constexpr int kDel = static_cast<int>(nextvm::spoof::kDeletedSuffixLen);
+    if (clen >= kDel && sc_streq(core + clen - kDel, nextvm::spoof::kDeletedSuffix)) {
+        core[clen - kDel] = 0;
+        clen -= kDel;
         deleted = true;
     }
     int olen = 0;
@@ -3993,7 +3995,7 @@ int sc_rewrite_fd_target(const char* in, char* out, int cap) {
     } else {
         return -1;
     }
-    if (deleted) emit(" (deleted)");
+    if (deleted) emit(nextvm::spoof::kDeletedSuffix);
     out[olen] = 0;
     return olen;
 }

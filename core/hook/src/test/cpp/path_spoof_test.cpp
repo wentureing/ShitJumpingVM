@@ -5,6 +5,7 @@
 //
 // 用法：path_spoof_test <path_spoof_vectors.tsv>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -113,6 +114,43 @@ int main(int argc, char** argv) {
         checkInv("alias_empty_rules_miss",
                  nextvm::spoof::redirect_path_with_alias(empty, "/data/user/0/mark.via/x").empty(),
                  "(empty table)");
+
+        // ---- 针对 (deleted) 缺陷的回归（历史上长度手写成 11，剥离永不生效）----
+        // 1) 常量自洽：长度必须等于后缀字符串长度（防止"改字符串不改长度"的第二形态）
+        checkInv("deleted_suffix_len_matches_text",
+                 nextvm::spoof::kDeletedSuffixLen ==
+                     std::strlen(nextvm::spoof::kDeletedSuffix),
+                 std::to_string(nextvm::spoof::kDeletedSuffixLen));
+        // 2) 行为：剥离必须生效、后缀必须原样出现在输出里，且**不得**被判 host_fallback
+        {
+            const std::string in =
+                "/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk" +
+                std::string(nextvm::spoof::kDeletedSuffix);
+            std::string out2;
+            bool hf = true;
+            const bool rew = nextvm::spoof::rewrite_virtual_path("mark.via", in, out2, &hf);
+            checkInv("deleted_suffix_stripped",
+                     rew && !hf &&
+                         out2 == nextvm::spoof::synthetic_apk_path("mark.via") +
+                                     nextvm::spoof::kDeletedSuffix,
+                     out2);
+        }
+        // 3) maps 层：同一行必须改写（保留后缀），不得被丢弃
+        {
+            const std::string in =
+                "7f0000000000-7f0000001000 r--p 00000000 fd:00 123 "
+                "/data/user/0/com.nextvm.app/files/virtual/apks/mark.via_1.apk" +
+                std::string(nextvm::spoof::kDeletedSuffix);
+            std::string out3;
+            const bool kept = nextvm::spoof::transform_maps_line("mark.via", in.c_str(), out3);
+            checkInv("deleted_suffix_maps_kept",
+                     kept &&
+                         stripTrailingNewline(out3) ==
+                             "7f0000000000-7f0000001000 r--p 00000000 fd:00 123 " +
+                                 nextvm::spoof::synthetic_apk_path("mark.via") +
+                                 nextvm::spoof::kDeletedSuffix,
+                     stripTrailingNewline(out3));
+        }
     }
 
     std::string line;

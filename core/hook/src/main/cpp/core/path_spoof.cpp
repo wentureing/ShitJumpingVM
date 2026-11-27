@@ -30,10 +30,11 @@ bool rewrite_virtual_path(const std::string& guest_pkg, const std::string& path,
     if (host_fallback != nullptr) *host_fallback = false;
     std::string core = path;
     std::string suffix;
-    if (core.size() >= 11 &&
-        core.compare(core.size() - 11, 11, " (deleted)") == 0) {
-        core.erase(core.size() - 11);
-        suffix = " (deleted)";
+    if (core.size() >= kDeletedSuffixLen &&
+        core.compare(core.size() - kDeletedSuffixLen, kDeletedSuffixLen,
+                     kDeletedSuffix) == 0) {
+        core.erase(core.size() - kDeletedSuffixLen);
+        suffix = kDeletedSuffix;
     }
 
     // Guest APK 文件：base + split（虚拟存储里 split 名为

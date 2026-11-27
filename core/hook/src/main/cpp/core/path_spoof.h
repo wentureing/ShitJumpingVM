@@ -4,12 +4,18 @@
 // 说明见 docs/代码镜像/core/hook/cpp/core/path_spoof.md
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 #include "path_rules.h"
 
 namespace nextvm {
 namespace spoof {
+
+/** maps 行/路径里的 " (deleted)" 后缀（含前导空格）。
+ *  长度一律用 kDeletedSuffixLen，**不要手数**（历史上写过 11，导致剥离永不生效）。 */
+inline constexpr char kDeletedSuffix[] = " (deleted)";
+inline constexpr std::size_t kDeletedSuffixLen = sizeof(kDeletedSuffix) - 1;
 
 /** 合成"正常安装"的 base.apk 路径。 */
 std::string synthetic_apk_path(const std::string& guest_pkg);
