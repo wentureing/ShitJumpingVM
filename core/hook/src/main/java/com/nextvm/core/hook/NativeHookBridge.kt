@@ -438,7 +438,20 @@ class NativeHookBridge @Inject constructor() {
         //   getExternalAppCacheDir -> <appDir>/sdcard/Android/data/<pkg>/cache
         // 实测过：早先目标写成 $sandboxDataDir/external_data/，那个目录从来没被写入过，
         // 于是应用自己拼 /storage/emulated/0/Android/data/<pkg>/ 去列举时会得到空目录。
-        val guestExternalData = "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
+        // B 态（内容目录外部化）：自拼路径的翻译目标也要指到 vsandbox，
+        // 否则会出现"写入走 getExternalFilesDir(vsandbox)、列举走自拼路径(沙箱)"的两份分离。
+        // 说明见 docs/设计/设计-内容目录三态与真假取舍.md
+        val externalRoot = if (
+            com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)
+        ) {
+            "/storage/emulated/0/vsandbox/$guestPackageName/external_files/"
+        } else {
+            "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
+        }
+        val guestExternalData = externalRoot
+        if (com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)) {
+            runCatching { java.io.File(externalRoot).mkdirs() }
+        }
         addPathRedirection("/storage/emulated/0/Android/data/$guestPackageName/", guestExternalData)
         addPathRedirection("/sdcard/Android/data/$guestPackageName/", guestExternalData)
         // 无尾斜杠变体：路径恰好等于前缀本身时（getExternalFilesDir/getObbDir 返回的正是这种形式），
