@@ -82,7 +82,7 @@ class AppRedirectionsTest {
             if (PathKinds.of(kind).owner != RedirectOwner.APP) continue
             removed += PathKinds.hostForms(kind, guest)
         }
-        removed += PathKinds.hostFallbackForms(com.nextvm.core.common.VirtualConstants.HOST_PACKAGE)
+        removed += PathKinds.hostFallbackForms(com.nextvm.core.model.VirtualConstants.HOST_PACKAGE)
 
         assertEquals("注册与删除必须对称，否则残留规则", removed, registered)
     }
