@@ -290,15 +290,15 @@ enum ProcSpoofKind {
 };
 
 // 以下 5 个函数已搬到 core/path_spoof.cpp（N1a）。门面只绑全局状态（guest 包名）。
-static bool maps_line_visible(const char* line) {
+[[maybe_unused]] static bool maps_line_visible(const char* line) {
     return nextvm::spoof::maps_line_visible(line);
 }
 
-static std::string synthetic_apk_path() {
+[[maybe_unused]] static std::string synthetic_apk_path() {
     return nextvm::spoof::synthetic_apk_path(g_spoofed_package_name);
 }
 
-static std::string synthetic_lib_path(const std::string& file_name) {
+[[maybe_unused]] static std::string synthetic_lib_path(const std::string& file_name) {
     return nextvm::spoof::synthetic_lib_path(g_spoofed_package_name, file_name);
 }
 
@@ -1196,7 +1196,7 @@ struct NvTidSlot {
 // flags before v72 and stay independent: being inside one must not
 // suppress the other's logging).
 static NvTidSlot g_tid_slots[256];
-static NvTidSlot g_sc_tid_slots[256];
+[[maybe_unused]] static NvTidSlot g_sc_tid_slots[256];
 
 // Defined further below (exempt svc trampoline: a bare svc whose
 // instruction address the seccomp filter lets through). Declared
@@ -1503,16 +1503,6 @@ static int hooked_mprotect(void* addr, size_t length, int prot) {
 }
 
 // ==================== GOT/PLT Hook Installation ====================
-
-// SIGSEGV-safe memory probe: returns false if the address is not readable
-static thread_local sigjmp_buf g_probe_jmp;
-static thread_local volatile bool g_probing = false;
-
-static void probe_signal_handler(int sig) {
-    if (g_probing) {
-        siglongjmp(g_probe_jmp, 1);
-    }
-}
 
 /**
  * Check if a memory address is safely readable using mincore() as a fast check,
@@ -1941,11 +1931,10 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
             if (sym_name[0] == '\0') continue;
             // v87: single-symbol pass (CM libDexHelper.so mmap-only)
             if (only_symbol != nullptr && strcmp(sym_name, only_symbol) != 0)
+                continue;
             // 受限模式（诊断全量 / G3 白名单）：只 patch 允许的符号
             if ((ns_open_diag_enabled() || ns_lib_allow_hit(lib_name)) &&
                 !ns_allow_symbol(sym_name))
-                continue;
-
                 continue;
 
             for (int h = 0; h < g_hook_count; h++) {
@@ -7163,26 +7152,6 @@ static void hooked_java_linux_rename(JNIEnv* env, jclass, jstring oldPath, jstri
         java_io_record("rename", realOld.c_str(), err, 0);
         java_io_throw_errno(env, "rename", err, realOld.c_str());
     }
-}
-
-static jlong hooked_java_linux_opendir(JNIEnv* env, jclass, jstring path) {
-    if (path == nullptr) { java_io_throw_npe(env, "path == null"); return 0; }
-    std::string real;
-    bool translated = false;
-    java_io_resolve(env, path, &real, &translated);
-    if (real.empty()) return 0;
-    g_java_io_fs_total.fetch_add(1);
-    if (translated) g_java_io_fs_translated.fetch_add(1);
-    DIR* d = (real_opendir != nullptr) ? real_opendir(real.c_str()) : ::opendir(real.c_str());
-    if (d == nullptr) {
-        int err = errno;
-        g_java_io_fs_fail.fetch_add(1);
-        java_io_record("opendir", real.c_str(), err, 0);
-        java_io_throw_errno(env, "opendir", err, real.c_str());
-        return 0;
-    }
-    if (translated) java_io_record("opendir", real.c_str(), 0, 0);
-    return static_cast<jlong>(reinterpret_cast<uintptr_t>(d));
 }
 
 /*
