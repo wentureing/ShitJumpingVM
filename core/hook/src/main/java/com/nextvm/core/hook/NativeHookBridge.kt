@@ -402,6 +402,24 @@ class NativeHookBridge @Inject constructor() {
      * @param instanceId The virtual instance ID
      * @param sandboxDataDir The sandbox data directory
      */
+    /**
+     * G3：把"库级白名单"下发给 native（bind 前调用，与 setupAppRedirections 同一编排点）。
+     *
+     * 语义：只有 [pkgAllow] 里的 guest 才会对 [libAllow] 命中的库 patch [symAllow] 里的符号；
+     * 三个参数任一为空即"不启用/不限制"。native 收到后会重评已加载但被跳过的库。
+     */
+    fun setupLibAllow(
+        pkgAllow: Collection<String> = LibAllowDefaults.PKG_ALLOW,
+        libAllow: Collection<String> = LibAllowDefaults.LIB_ALLOW,
+        symAllow: Collection<String> = LibAllowDefaults.SYM_ALLOW,
+    ) {
+        nativeSetLibAllow(
+            pkgAllow.joinToString(","),
+            libAllow.joinToString(","),
+            symAllow.joinToString(","),
+        )
+    }
+
     fun setupAppRedirections(guestPackageName: String, instanceId: String, sandboxDataDir: String) {
         // Primary data directory redirection
         addPathRedirection(
@@ -1006,6 +1024,9 @@ class NativeHookBridge @Inject constructor() {
      *        readlink, realpath, __system_property_get
      */
     private external fun nativeInit(): Boolean
+
+    /** G3：下发库级白名单（pkg/lib/sym 均为逗号分隔；空串不启用）。 */
+    private external fun nativeSetLibAllow(pkgAllow: String, libAllow: String, symAllow: String)
 
     /** Add a native-level path redirection rule. */
     private external fun nativeAddPathRedirection(fromPrefix: String, toPrefix: String)

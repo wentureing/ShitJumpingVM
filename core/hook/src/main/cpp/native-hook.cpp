@@ -575,48 +575,44 @@ static bool ns_open_diag_enabled() {
 }
 
 // G3 白名单（2026-11-28）：包级 + 库级，pkg 先于 lib。配置走系统属性，逗号分隔：
-//   debug.nextvm.pkgAllow = mark.via,com.sandbox.probe
-//   debug.nextvm.libAllow = libjavacore,libmonochrome_64
-//   debug.nextvm.symAllow = open,openat,stat,access,readlink
-static bool prop_contains(const char* prop, const char* needle) {
-    if (needle == nullptr || needle[0] == '\0') return false;
-    char v[PROP_VALUE_MAX] = {0};
-    __system_property_get(prop, v);
-    if (v[0] == '\0') return false;
-    return strstr(v, needle) != nullptr;
+// G3 白名单由**管理器在 bind 前下发**（nativeSetLibAllow），不读系统属性。
+// 保护锁只在下发时拿；读路径（patch_library_got）本身是低频（每次 dlopen）。
+static std::mutex g_allow_mutex;
+static std::string g_lib_allow_pkg;   // 允许的 guest 包名列表；空 = 不做包级限制
+static std::string g_lib_allow_libs;  // 允许的库名列表；空 = 白名单未启用（零行为变化）
+static std::string g_lib_allow_syms;  // 允许的符号列表；空 = 退化为 open/openat
+
+// 因"白名单尚未下发"而被跳过的库：下发后由 repatch_loaded_libs() 重评
+static std::unordered_set<uintptr_t> g_skipped_libs;
+static std::unordered_map<uintptr_t, std::string> g_skipped_names;
+
+// 调用方需持 g_allow_mutex
+static bool ns_lib_allow_hit_locked(const char* lib_name) {
+    if (lib_name == nullptr || g_lib_allow_libs.empty()) return false;
+    if (!g_lib_allow_pkg.empty() && g_spoofed_package_name.empty()) return false;
+    if (!g_lib_allow_pkg.empty() &&
+        !nextvm::libfilter::list_matches(g_lib_allow_pkg.c_str(),
+                                         g_spoofed_package_name.c_str()))
+        return false;
+    return nextvm::libfilter::list_matches(g_lib_allow_libs.c_str(), lib_name);
 }
 
-// 命中的库：所属 guest 在 pkgAllow 里，且库名在 libAllow 里 —— 即使被判为系统库也要 patch。
 static bool ns_lib_allow_hit(const char* lib_name) {
-    if (lib_name == nullptr || g_spoofed_package_name.empty()) return false;
-    if (!prop_contains("debug.nextvm.pkgAllow", g_spoofed_package_name.c_str())) return false;
-    return prop_contains("debug.nextvm.libAllow", lib_name);
+    std::lock_guard<std::mutex> lock(g_allow_mutex);
+    return ns_lib_allow_hit_locked(lib_name);
 }
 
-// 逗号分隔列表的**精确**成员匹配（符号名有前缀包含关系：open ⊂ openat，不能用子串）
-static bool prop_list_exact(const char* prop, const char* needle) {
-    char v[PROP_VALUE_MAX] = {0};
-    __system_property_get(prop, v);
-    if (v[0] == '\0') return false;
-    const size_t n = strlen(needle);
-    const char* p = v;
-    while (*p != '\0') {
-        const char* comma = strchr(p, ',');
-        const size_t len = (comma != nullptr) ? static_cast<size_t>(comma - p) : strlen(p);
-        if (len == n && strncmp(p, needle, n) == 0) return true;
-        if (comma == nullptr) break;
-        p = comma + 1;
-    }
-    return false;
+// 白名单是否已下发（未下发 ⇒ 完全走原四级判据，零行为变化）
+static bool ns_lib_allow_configured() {
+    std::lock_guard<std::mutex> lock(g_allow_mutex);
+    return !g_lib_allow_libs.empty();
 }
 
-// 白名单库只 patch symAllow 里的符号（默认 5 个），避免把 Chromium/libjavacore 的全部 PLT 都替换掉。
+// 白名单库只 patch 允许的符号（默认 open/openat），避免替换整张 PLT。
 static bool ns_allow_symbol(const char* sym_name) {
-    if (prop_list_exact("debug.nextvm.symAllow", sym_name)) return true;
-    char v[PROP_VALUE_MAX] = {0};
-    __system_property_get("debug.nextvm.symAllow", v);
-    if (v[0] != '\0') return false;  // 已配置则严格按列表
-    // 未配置 symAllow 时退化为 open/openat（与诊断模式一致）
+    std::lock_guard<std::mutex> lock(g_allow_mutex);
+    if (!g_lib_allow_syms.empty())
+        return nextvm::libfilter::list_exact(g_lib_allow_syms.c_str(), sym_name);
     return strcmp(sym_name, "open") == 0 || strcmp(sym_name, "openat") == 0;
 }
 static void diag_caller(void* ret_addr, char* buf, size_t len);
@@ -1743,10 +1739,10 @@ static bool patch_got_entry(void** got_addr, void* new_func, void** old_func) {
  * Parses the ELF dynamic section to locate .rel.plt / .rela.plt relocations,
  * then patches GOT entries for our target symbols.
  */
-static void patch_library_got(uintptr_t base_addr, const char* lib_name,
-                               const ElfW(Dyn)* dynamic,
-                               const char* only_symbol = nullptr) {
-    if (dynamic == nullptr) return;
+static bool patch_library_got(uintptr_t base_addr, const char* lib_name,
+                                const ElfW(Dyn)* dynamic,
+                                const char* only_symbol = nullptr) {
+    if (dynamic == nullptr) return false;
     int applied_here = 0;  // 本库成功替换的 GOT 槽数（N2-C 观测用）
 
     // Find required dynamic entries
@@ -1820,13 +1816,13 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
         if (verdict.decision == nextvm::libfilter::Decision::kSkip) {
             // 诊断构建（NS_HOOK_OPEN_DIAG=1）：系统库也 patch，但只 patch open/openat，
             // 用来定位"谁在读 WebView 内容文件"。graphics/self 仍然跳过（避免崩溃）。
-            if (!ns_open_diag_enabled() && !ns_lib_allow_hit(lib_name)) return;
-            if (verdict.reason != nextvm::libfilter::Reason::kSystemLib) return;
+            if (!ns_open_diag_enabled() && !ns_lib_allow_hit(lib_name)) return false;
+            if (verdict.reason != nextvm::libfilter::Reason::kSystemLib) return false;
         }
     }
 
-    if (symtab == nullptr || strtab == nullptr) return;
-    if (rel_plt == nullptr && rela_plt == nullptr) return;
+    if (symtab == nullptr || strtab == nullptr) return false;
+    if (rel_plt == nullptr && rela_plt == nullptr) return false;
 
     // Normalize dynamic-segment pointers. On Android 17 many libraries keep
     // link-time virtual addresses (offsets relative to the load bias) in their
@@ -1840,7 +1836,7 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
     // skipped (observed: 354 skipped, 0 hooked on Android 17 / SDK 37).
     if (base_addr == 0) {
         LOGW("Skipping %s: base_addr=0, cannot rebase dynamic pointers", lib_name);
-        return;
+        return false;
     }
     auto rebase_ptr = [base_addr](uintptr_t p) -> uintptr_t {
         return (p != 0 && p < base_addr) ? base_addr + p : p;
@@ -1859,19 +1855,19 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
         !is_address_readable(strtab, 1)) {
         LOGW("Skipping %s: symtab(%p) or strtab(%p) not in readable memory",
              lib_name, symtab, strtab);
-        return;
+        return false;
     }
 
     // Also validate relocation table pointer
     if (use_rela && rela_plt) {
         if (!is_address_readable(rela_plt, sizeof(ElfW(Rela)))) {
             LOGW("Skipping %s: rela_plt(%p) not readable", lib_name, rela_plt);
-            return;
+            return false;
         }
     } else if (rel_plt) {
         if (!is_address_readable(rel_plt, sizeof(ElfW(Rel)))) {
             LOGW("Skipping %s: rel_plt(%p) not readable", lib_name, rel_plt);
-            return;
+            return false;
         }
     }
 
@@ -1955,6 +1951,7 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
     if (applied_here > 0) {
         g_native_stats.libs_applied.fetch_add(1, std::memory_order_relaxed);
     }
+    return applied_here > 0;
 }
 
 // Base addresses already processed by a patch pass. Libraries loaded
@@ -2166,7 +2163,17 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
     }
 
     if (dynamic != nullptr) {
-        patch_library_got(info->dlpi_addr, name, dynamic);
+        // 白名单未下发时系统库先被跳过；记入 g_skipped_libs，等 nativeSetLibAllow
+        // 下发后由 repatch_loaded_libs() 重评（配置晚于库加载，这是事实时序）。
+        const bool applied = patch_library_got(info->dlpi_addr, name, dynamic);
+        if (applied || ns_lib_allow_configured()) {
+            g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
+            if (info->dlpi_addr != 0) g_patched_bases.insert(info->dlpi_addr);
+        } else if (info->dlpi_addr != 0) {
+            g_skipped_libs.insert(info->dlpi_addr);
+            g_skipped_names[info->dlpi_addr] = name;
+        }
+        return 0;
     }
 
     g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
@@ -2250,6 +2257,59 @@ static bool install_plt_hooks() {
 // Refreshed after every late-patch pass so libraries loaded by the
 // guest (e.g. a packer's .so) become attributable in the trap log.
 static void sc_refresh_modules();
+
+/**
+ * 白名单下发后，重评"因白名单尚未下发而跳过"的库（只对命中的库补 patch）。
+ * 这是 g_skipped_libs 的唯一消费点；无命中则零开销。
+ */
+static void repatch_loaded_libs() {
+    if (!g_initialized) return;
+    std::vector<std::pair<uintptr_t, std::string>> todo;
+    {
+        std::lock_guard<std::mutex> lock(g_allow_mutex);
+        if (g_lib_allow_libs.empty()) return;
+        for (const auto& kv : g_skipped_names) {
+            if (ns_lib_allow_hit_locked(kv.second.c_str())) todo.emplace_back(kv.first, kv.second);
+        }
+    }
+    if (todo.empty()) return;
+
+    size_t patched = 0;
+    for (const auto& item : todo) {
+        struct Ctx {
+            uintptr_t base;
+            bool applied;
+        } ctx{item.first, false};
+        dl_iterate_phdr(
+            [](struct dl_phdr_info* info, size_t, void* data) -> int {
+                Ctx* c = static_cast<Ctx*>(data);
+                if (info->dlpi_addr != c->base) return 0;
+                const ElfW(Dyn)* dyn = nullptr;
+                for (int i = 0; i < info->dlpi_phnum; i++) {
+                    if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+                        dyn = reinterpret_cast<const ElfW(Dyn)*>(
+                            info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
+                        break;
+                    }
+                }
+                if (dyn != nullptr) {
+                    c->applied = patch_library_got(info->dlpi_addr, info->dlpi_name, dyn);
+                    if (c->applied) g_patched_bases.insert(info->dlpi_addr);
+                }
+                return 1;
+            },
+            &ctx);
+        if (ctx.applied) ++patched;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_allow_mutex);
+        for (const auto& item : todo) {
+            g_skipped_libs.erase(item.first);
+            g_skipped_names.erase(item.first);
+        }
+    }
+    LOGI("repatch_loaded_libs: candidates=%zu patched=%zu", todo.size(), patched);
+}
 
 /**
  * Re-run the GOT patch pass so libraries loaded after nativeInit
@@ -2379,6 +2439,34 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativePatchNewlyLoaded(
     if (!g_initialized) return JNI_FALSE;
     patch_newly_loaded_libraries();
     return JNI_TRUE;
+}
+
+/* G3：白名单由管理器（NativeHookBridge.setupLibAllow）在 bind 前下发。
+ * 参数均为逗号分隔；空串表示"不启用/不限制"。下发后立即重评已加载但被跳过的库。 */
+JNIEXPORT void JNICALL
+Java_com_nextvm_core_hook_NativeHookBridge_nativeSetLibAllow(
+    JNIEnv* env, jobject thiz, jstring pkgAllow, jstring libAllow, jstring symAllow)
+{
+    (void)thiz;
+    auto toStd = [env](jstring s) -> std::string {
+        if (s == nullptr) return {};
+        const char* c = env->GetStringUTFChars(s, nullptr);
+        std::string out = (c != nullptr) ? c : "";
+        if (c != nullptr) env->ReleaseStringUTFChars(s, c);
+        return out;
+    };
+    const std::string pkg = toStd(pkgAllow);
+    const std::string libs = toStd(libAllow);
+    const std::string syms = toStd(symAllow);
+    {
+        std::lock_guard<std::mutex> lock(g_allow_mutex);
+        g_lib_allow_pkg = pkg;
+        g_lib_allow_libs = libs;
+        g_lib_allow_syms = syms;
+    }
+    LOGI("libAllow set: pkg='%s' libs='%s' syms='%s'", pkg.c_str(), libs.c_str(),
+         syms.c_str());
+    repatch_loaded_libs();
 }
 
 /* 最近 N 条「命中翻译 / 失败」的记录，每行：op err=<n> from -> to */

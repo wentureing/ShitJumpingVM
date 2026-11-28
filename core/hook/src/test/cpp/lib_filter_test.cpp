@@ -110,6 +110,62 @@ int main(int argc, char** argv) {
         }
     }
 
+    // list_matches / list_exact：G3 白名单的匹配语义（2026-11-28）
+    // 关键回归：属性/配置里是**短库名**，实际传入的是**长路径** —— 方向不能反。
+    struct MatchCase {
+        const char* name;
+        const char* csv;
+        const char* subject;
+        bool expect;
+    };
+    const std::vector<MatchCase> matchCases = {
+        {"V1_path_contains_item", "libjavacore",
+         "/apex/com.android.art/lib64/libjavacore.so", true},
+        {"V2_multi_item", "libmonochrome_64,libjavacore",
+         "/apex/com.android.art/lib64/libjavacore.so", true},
+        {"V3_no_false_hit", "libmonochrome_64",
+         "/apex/com.android.art/lib64/libjavacore.so", false},
+        {"V4_pkg_hit", "mark.via,com.sandbox.probe", "com.sandbox.probe", true},
+        {"V5_pkg_no_false_hit", "mark.via", "com.sandbox.probe", false},
+        {"V6_missing", "", "/apex/libjavacore.so", false},
+    };
+    for (const auto& c : matchCases) {
+        ++total;
+        const bool got = nextvm::libfilter::list_matches(c.csv, c.subject);
+        if (got == c.expect) {
+            std::cout << "[ok] list_matches " << c.name << "\n";
+        } else {
+            ++failed;
+            std::cerr << "[FAIL] list_matches " << c.name << " expected=" << c.expect
+                      << " actual=" << got << "\n";
+        }
+    }
+
+    // list_exact：符号名有前缀包含（open ⊂ openat），必须精确
+    struct ExactCase {
+        const char* name;
+        const char* csv;
+        const char* needle;
+        bool expect;
+    };
+    const std::vector<ExactCase> exactCases = {
+        {"E1_exact_hit", "open,openat,stat", "openat", true},
+        {"E2_no_prefix_hit", "open,stat", "openat", false},
+        {"E3_no_substring_hit", "openat", "open", false},
+        {"E4_empty_list", "", "open", false},
+    };
+    for (const auto& c : exactCases) {
+        ++total;
+        const bool got = nextvm::libfilter::list_exact(c.csv, c.needle);
+        if (got == c.expect) {
+            std::cout << "[ok] list_exact " << c.name << "\n";
+        } else {
+            ++failed;
+            std::cerr << "[FAIL] list_exact " << c.name << " expected=" << c.expect
+                      << " actual=" << got << "\n";
+        }
+    }
+
     std::cout << "lib_filter_test: " << (total - failed) << "/" << total << " passed\n";
     return failed == 0 ? 0 : 1;
 }

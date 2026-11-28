@@ -28,6 +28,12 @@ struct Verdict {
 /** 判定一个库要不要 GOT patch。system_libs_enabled 对应 NS_HOOK_SYSTEM_LIBS。 */
 Verdict classify_lib(const char* lib_name, bool system_libs_enabled);
 
+/** 逗号分隔列表里是否有"某一项出现在 subject 中"（用于短库名 vs 长路径）。 */
+bool list_matches(const char* csv, const char* subject);
+
+/** 逗号分隔列表里是否有与 needle 完全相等的一项（符号名有前缀包含：open ⊂ openat）。 */
+bool list_exact(const char* csv, const char* needle);
+
 const char* reason_name(Reason reason);
 
 }  // namespace libfilter

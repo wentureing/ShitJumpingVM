@@ -523,6 +523,8 @@ class VirtualApplicationManager @Inject constructor(
             nativeHookBridge.setupAppRedirections(
                 guestPkg, instanceId, appDir.absolutePath
             )
+            // G3：把库级白名单下发给 native（绑定 same-guest 作用域；默认值见 LibAllowDefaults）
+            nativeHookBridge.setupLibAllow()
             com.nextvm.core.common.DebugTrace.event(
                 "v142",
                 "registered rules=" + nativeHookBridge.getPathRedirectSnapshot().size +

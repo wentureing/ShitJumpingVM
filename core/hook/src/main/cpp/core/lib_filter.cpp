@@ -3,6 +3,7 @@
 #include "lib_filter.h"
 
 #include <cstring>
+#include <string>
 
 namespace nextvm {
 namespace libfilter {
@@ -40,6 +41,38 @@ Verdict classify_lib(const char* lib_name, bool system_libs_enabled) {
     // 4) 其余系统库：由 NS_HOOK_SYSTEM_LIBS 决定
     return {system_libs_enabled ? Decision::kPatch : Decision::kSkip,
             Reason::kSystemLib};
+}
+
+bool list_exact(const char* csv, const char* needle) {
+    if (csv == nullptr || needle == nullptr || needle[0] == '\0') return false;
+    const std::size_t n = std::strlen(needle);
+    const char* p = csv;
+    while (*p != '\0') {
+        const char* comma = std::strchr(p, ',');
+        const std::size_t len = (comma != nullptr) ? static_cast<std::size_t>(comma - p)
+                                                   : std::strlen(p);
+        if (len == n && std::strncmp(p, needle, n) == 0) return true;
+        if (comma == nullptr) break;
+        p = comma + 1;
+    }
+    return false;
+}
+
+bool list_matches(const char* csv, const char* subject) {
+    if (csv == nullptr || subject == nullptr || subject[0] == '\0') return false;
+    const char* p = csv;
+    while (*p != '\0') {
+        const char* comma = std::strchr(p, ',');
+        const std::size_t len = (comma != nullptr) ? static_cast<std::size_t>(comma - p)
+                                                   : std::strlen(p);
+        if (len > 0) {
+            const std::string item(p, len);
+            if (std::strstr(subject, item.c_str()) != nullptr) return true;
+        }
+        if (comma == nullptr) break;
+        p = comma + 1;
+    }
+    return false;
 }
 
 const char* reason_name(Reason reason) {
