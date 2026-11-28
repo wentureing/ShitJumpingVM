@@ -633,6 +633,72 @@ static void wv_read_trace(const char* fn, const char* path, int fd, int err, voi
     syscall(SYS_close, f);
 }
 
+// ---- 深挖 libjavacore：记录它调用的 I/O 变体（2026-11-28）----
+// 开关 debug.nextvm.libcTrace=1（默认关，零开销）；只在 caller 含 libjavacore
+// 或路径含 font/system/apex 时落 files/libc-trace.log。
+static bool ns_libc_trace_enabled() {
+    static int cached = -1;
+    if (cached < 0) {
+        char v[PROP_VALUE_MAX] = {0};
+        __system_property_get("debug.nextvm.libcTrace", v);
+        cached = (v[0] == '1') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+static void ns_trace_libc_call(const char* fn, int dirfd, const char* path, int flags,
+                               int ret, int err, void* caller_ret) {
+    if (!ns_libc_trace_enabled() || path == nullptr) return;
+    char who[128] = "?";
+    if (caller_ret != nullptr) diag_caller(caller_ret, who, sizeof(who));
+    const bool byJavacore = strstr(who, "libjavacore") != nullptr;
+    const bool interesting = byJavacore || strstr(path, "font") != nullptr ||
+                             strstr(path, "/system/") != nullptr ||
+                             strstr(path, "/apex/") != nullptr;
+    if (!interesting) return;
+    char line[768];
+    int n = snprintf(line, sizeof(line),
+                     "%s dirfd=%d pid=%d tid=%d ret=%d err=%d flags=0x%x who=%s path=%s\n",
+                     fn, dirfd, getpid(), gettid(), ret, err, flags, who, path);
+    if (n <= 0) return;
+    int f = static_cast<int>(syscall(SYS_openat, AT_FDCWD,
+            "/data/user/0/com.nextvm.app/files/libc-trace.log",
+            O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644));
+    if (f < 0) return;
+    syscall(SYS_write, f, line, static_cast<size_t>(n));
+    syscall(SYS_close, f);
+}
+
+// libjavacore 的 PLT I/O 符号：我们 hook 到的 vs 没 hook 到的（一次写盘）
+static std::unordered_set<std::string>& javacore_hooked_syms() {
+    static std::unordered_set<std::string> s;
+    return s;
+}
+static std::unordered_set<std::string>& javacore_unhooked_syms() {
+    static std::unordered_set<std::string> s;
+    return s;
+}
+static void ns_write_diag_line(const char* file, const char* line) {
+    if (file == nullptr || line == nullptr) return;
+    int f = static_cast<int>(syscall(SYS_openat, AT_FDCWD, file,
+            O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644));
+    if (f < 0) return;
+    syscall(SYS_write, f, line, strlen(line));
+    syscall(SYS_close, f);
+}
+static void javacore_dump_io_syms(const char* lib_name) {
+    if (lib_name == nullptr || strstr(lib_name, "libjavacore") == nullptr) return;
+    static bool dumped = false;
+    if (dumped) return;
+    dumped = true;
+    std::string hs, us;
+    for (const auto& s : javacore_hooked_syms()) { if (!hs.empty()) hs += ","; hs += s; }
+    for (const auto& s : javacore_unhooked_syms()) { if (!us.empty()) us += ","; us += s; }
+    std::string line = "javacore PLT I/O: hooked=[" + hs + "] unhooked=[" + us + "]\n";
+    ns_write_diag_line("/data/user/0/com.nextvm.app/files/libc-trace.log", line.c_str());
+    LOGI("%s", line.c_str());
+}
+
 static int hooked_open(const char* path, int flags, ...) {
     // Check hidden paths
     if (is_path_hidden(path)) {
@@ -666,10 +732,14 @@ static int hooked_open(const char* path, int flags, ...) {
         va_end(args);
         int r = real_open(actual_path, flags, mode);
         wv_read_trace("open", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
+        ns_trace_libc_call("open", -1, path, flags, r, r < 0 ? errno : 0,
+                            __builtin_return_address(0));
         return r;
     }
     int r = real_open(actual_path, flags);
     wv_read_trace("open", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
+    ns_trace_libc_call("open", -1, path, flags, r, r < 0 ? errno : 0,
+                        __builtin_return_address(0));
     return r;
 }
 
@@ -706,10 +776,14 @@ static int hooked_openat(int dirfd, const char* path, int flags, ...) {
         va_end(args);
         int r = real_openat(dirfd, actual_path, flags, mode);
         wv_read_trace("openat", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
+        ns_trace_libc_call("openat", dirfd, path, flags, r, r < 0 ? errno : 0,
+                            __builtin_return_address(0));
         return r;
     }
     int r = real_openat(dirfd, actual_path, flags);
     wv_read_trace("openat", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
+    ns_trace_libc_call("openat", dirfd, path, flags, r, r < 0 ? errno : 0,
+                        __builtin_return_address(0));
     return r;
 }
 
@@ -1895,6 +1969,31 @@ static bool patch_library_got(uintptr_t base_addr, const char* lib_name,
                 !ns_allow_symbol(sym_name))
                 continue;
 
+            // 深挖：libjavacore 的 PLT 里到底有哪些 I/O 符号，哪些没被我们 hook
+            if (lib_name != nullptr && strstr(lib_name, "libjavacore") != nullptr) {
+                static const char* const kIoSyms[] = {
+                    "open", "openat", "open64", "openat64", "__open_2", "__openat_2",
+                    "fopen", "fopen64", "stat", "stat64", "lstat", "statx",
+                    "access", "faccessat", "readlink", "readlinkat",
+                    "mkdir", "unlink", "rename", "opendir"};
+                for (const char* io : kIoSyms) {
+                    if (strcmp(sym_name, io) != 0) continue;
+                    bool hookHas = false;
+                    for (int h = 0; h < g_hook_count; h++) {
+                        if (strcmp(sym_name, g_hook_entries[h].symbol) == 0) {
+                            hookHas = true;
+                            break;
+                        }
+                    }
+                    if (hookHas) {
+                        javacore_hooked_syms().insert(sym_name);
+                    } else {
+                        javacore_unhooked_syms().insert(sym_name);
+                    }
+                    break;
+                }
+            }
+
             // Check if this symbol is one we want to hook
             for (int h = 0; h < g_hook_count; h++) {
                 if (strcmp(sym_name, g_hook_entries[h].symbol) == 0) {
@@ -1951,6 +2050,7 @@ static bool patch_library_got(uintptr_t base_addr, const char* lib_name,
     if (applied_here > 0) {
         g_native_stats.libs_applied.fetch_add(1, std::memory_order_relaxed);
     }
+    javacore_dump_io_syms(lib_name);
     return applied_here > 0;
 }
 
