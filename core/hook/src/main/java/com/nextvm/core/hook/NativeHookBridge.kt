@@ -500,6 +500,19 @@ class NativeHookBridge @Inject constructor() {
         //   于是拼出 .../Android/data/com.nextvm.app/... —— 必须落到 guest 自己的 external 目录，
         //   否则"保存到 A、从 B 读"，列表永远是空的。
         if (HOST_EXTERNAL_FALLBACK) {
+            // B 态：guest 拼的是 <host>/files/<type>（真机形状带 files 段），而 vsandbox 布局是
+            // external_files/<type>（无 files 段）。这里用更长前缀把 files 段剥掉，让"保存"与
+            // "按 getOpPackageName() 拼路径读取"落到同一目录。规则表是最长前缀优先，所以能压过下面的根规则。
+            if (com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)) {
+                val extRoot = "/storage/emulated/0/vsandbox/$guestPackageName/external_files/"
+                for (prefix in arrayOf(HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B)) {
+                    addPathRedirection(prefix + "files/", extRoot)
+                    addPathRedirection(prefix + "files", extRoot.trimEnd('/'))
+                    addPathRedirection(prefix + "cache/", extRoot + "cache/")
+                    addPathRedirection(prefix + "cache", (extRoot + "cache").trimEnd('/'))
+                }
+                runCatching { java.io.File(extRoot).mkdirs() }
+            }
             addPathRedirection(HOST_EXT_PREFIX_A, guestExternalData)
             addPathRedirection(HOST_EXT_PREFIX_B, guestExternalData)
             runCatching { java.io.File(guestExternalData).mkdirs() }
