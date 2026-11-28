@@ -654,7 +654,9 @@ static void ns_trace_libc_call(const char* fn, int dirfd, const char* path, int 
     const bool byJavacore = strstr(who, "libjavacore") != nullptr;
     const bool interesting = byJavacore || strstr(path, "font") != nullptr ||
                              strstr(path, "/system/") != nullptr ||
-                             strstr(path, "/apex/") != nullptr;
+                             strstr(path, "/apex/") != nullptr ||
+        strstr(path, "vsandbox") != nullptr || strstr(path, "external_data") != nullptr ||
+        strstr(path, "external_files") != nullptr;
     if (!interesting) return;
     char line[768];
     int n = snprintf(line, sizeof(line),
@@ -799,7 +801,10 @@ static int hooked_access(const char* path, int mode) {
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
-    return real_access(actual_path, mode);
+    const int r = real_access(actual_path, mode);
+    ns_trace_libc_call("access", -1, path, mode, r, r < 0 ? errno : 0,
+                        __builtin_return_address(0));
+    return r;
 }
 
 /**
@@ -814,7 +819,10 @@ static int hooked_stat(const char* path, struct stat* buf) {
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
-    return real_stat(actual_path, buf);
+    const int r = real_stat(actual_path, buf);
+    ns_trace_libc_call("stat", -1, path, 0, r, r < 0 ? errno : 0,
+                        __builtin_return_address(0));
+    return r;
 }
 
 /**
@@ -829,7 +837,10 @@ static int hooked_lstat(const char* path, struct stat* buf) {
     std::string redirected = redirect_path(path);
     const char* actual_path = redirected.empty() ? path : redirected.c_str();
 
-    return real_lstat(actual_path, buf);
+    const int r = real_lstat(actual_path, buf);
+    ns_trace_libc_call("lstat", -1, path, 0, r, r < 0 ? errno : 0,
+                        __builtin_return_address(0));
+    return r;
 }
 
 /**
@@ -1439,11 +1450,15 @@ static DIR* hooked_opendir(const char* path) {
         DIR* d = real_opendir(redirected.c_str());
         fs_note(&g_fs_opendir_stats, "opendir", path, redirected.c_str(),
                 d == nullptr ? errno : 0);
+        ns_trace_libc_call("opendir", -1, path, 0, d == nullptr ? -1 : 0,
+                            d == nullptr ? errno : 0, __builtin_return_address(0));
         return d;
     }
     DIR* d0 = real_opendir(path);
     if (d0 == nullptr) fs_note(&g_fs_opendir_stats, "opendir", path, nullptr, errno);
     else g_fs_opendir_stats.total.fetch_add(1);
+    ns_trace_libc_call("opendir", -1, path, 0, d0 == nullptr ? -1 : 0,
+                        d0 == nullptr ? errno : 0, __builtin_return_address(0));
     return d0;
 }
 
