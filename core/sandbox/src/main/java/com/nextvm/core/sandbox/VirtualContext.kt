@@ -60,8 +60,30 @@ class VirtualContext(
      */
     private val contentPathsUseReal: Boolean = false
 
-    private fun contentDir(sandboxDir: File, synthetic: () -> File): File =
-        if (shouldUseSyntheticContent(pathFidelity, contentPathsUseReal)) synthetic() else sandboxDir
+    private companion object {
+        /** B 态内容目录根：共享存储里**不含包名以外标识**的自建目录（实测 text/html）。 */
+        const val EXTERNAL_CONTENT_ROOT = "/storage/emulated/0/vsandbox"
+    }
+
+    /**
+     * 内容目录三态（B 态 / A 态 / 现状）：
+     *  - [rel] != null 且该 guest 在"内容目录外部化名单"里 → `/storage/emulated/0/vsandbox/<pkg>/<rel>`
+     *    （真实可读、不含宿主包名 ⇒ WebView `file://` 得 text/html；不依赖路径翻译）
+     *  - 否则合成（pathFidelity） / 沙箱真路径（现状）。
+     * 说明见 docs/设计/设计-内容目录三态与真假取舍.md
+     */
+    private fun contentDir(sandboxDir: File, rel: String? = null, synthetic: () -> File): File {
+        if (rel != null &&
+            com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)
+        ) {
+            val dir = File(EXTERNAL_CONTENT_ROOT, "$guestPackageName/$rel")
+            dir.mkdirs()
+            val nomedia = File(dir, ".nomedia")
+            if (!nomedia.exists()) runCatching { nomedia.createNewFile() }
+            return dir
+        }
+        return if (shouldUseSyntheticContent(pathFidelity, contentPathsUseReal)) synthetic() else sandboxDir
+    }
 
 
     /** Cached meta-data bundle from guest APK (parsed once) */
@@ -144,7 +166,7 @@ class VirtualContext(
 
     override fun getFilesDir(): File {
         val sandboxDir = sandboxManager.getFilesDir(instanceId)
-        val dir = contentDir(sandboxDir) {
+        val dir = contentDir(sandboxDir, "files") {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "files")
         }
         com.nextvm.core.common.DebugTrace.detail("ctx", "getFilesDir -> ${dir.absolutePath}")
@@ -152,7 +174,7 @@ class VirtualContext(
     }
 
     override fun getCacheDir(): File =
-        contentDir(sandboxManager.getCacheDir(instanceId)) {
+        contentDir(sandboxManager.getCacheDir(instanceId), "cache") {
             File(VirtualConstants.syntheticDataDir(guestPackageName), "cache")
         }
 
@@ -188,7 +210,10 @@ class VirtualContext(
         // pathFidelity：对外给 /storage/emulated/0/Android/data/<pkg>/files[/type]（真机形态），
         // I/O 由 setupAppRedirections 的规则映射回 sandboxDir。
         // 详见 docs/架构/架构-syntheticDataDir.md
-        val dir = contentDir(sandboxDir) {
+        val dir = contentDir(
+            sandboxDir,
+            if (type != null) "external_files/$type" else "external_files",
+        ) {
             val base = VirtualConstants.syntheticExternalDir(guestPackageName)
             File(if (type != null) "$base/files/$type" else "$base/files")
         }
@@ -204,7 +229,7 @@ class VirtualContext(
 
     override fun getExternalCacheDir(): File {
         val sandboxDir = sandboxManager.getExternalAppCacheDir(instanceId, guestPackageName)
-        return contentDir(sandboxDir) {
+        return contentDir(sandboxDir, "external_cache") {
             File(VirtualConstants.syntheticExternalCacheDir(guestPackageName))
         }
     }

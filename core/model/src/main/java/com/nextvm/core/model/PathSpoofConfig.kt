@@ -23,6 +23,7 @@ object PathSpoofConfig {
     private const val SECTION_EXEMPT = "豁免名单"
     private const val SECTION_SPOOF = "欺骗名单"
     private const val SECTION_KINDS = "各族开关"
+    private const val SECTION_CONTENT_ROOT = "内容目录外部化名单"
 
     /** 豁免的包名（不做任何路径形态欺骗） */
     private val exemptPkgs = ConcurrentHashMap.newKeySet<String>()
@@ -32,6 +33,15 @@ object PathSpoofConfig {
 
     /** 显式关闭的路径族（缺省 = 开） */
     private val kindOff = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 内容目录外部化的包名（B 态）：`getFilesDir()` 等返回
+     * `/storage/emulated/0/vsandbox/<pkg>/...`（真实可读、不含宿主包名）。
+     *
+     * 只对名单内的 guest 生效；不在名单 = 保持原行为。缺省含 via（WebView 需要）。
+     * 说明见 docs/设计/设计-内容目录三态与真假取舍.md
+     */
+    private val contentRootPkgs = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var storeFile: File? = null
@@ -47,6 +57,7 @@ object PathSpoofConfig {
         exemptPkgs.clear()
         spoofPkgs.clear()
         kindOff.clear()
+        contentRootPkgs.clear()
         if (!f.exists()) {
             writeTemplate(f)
             loaded = true
@@ -64,7 +75,8 @@ object PathSpoofConfig {
                 when (section) {
                     SECTION_EXEMPT -> exemptPkgs.add(line)
                     SECTION_SPOOF -> spoofPkgs.add(line)
-                    SECTION_KINDS -> {
+                    SECTION_CONTENT_ROOT -> contentRootPkgs.add(line)
+                SECTION_KINDS -> {
                         val eq = line.indexOf('=')
                         if (eq > 0) {
                             val k = line.substring(0, eq).trim()
@@ -103,6 +115,18 @@ object PathSpoofConfig {
         return changed
     }
 
+    /** 该 guest 的内容目录是否外部化（B 态）。 */
+    fun isExternalContentListed(packageName: String): Boolean =
+        contentRootPkgs.contains(packageName)
+
+    fun externalContentList(): List<String> = contentRootPkgs.sorted()
+
+    fun setExternalContentListed(packageName: String, listed: Boolean): Boolean {
+        val changed = if (listed) contentRootPkgs.add(packageName) else contentRootPkgs.remove(packageName)
+        if (changed) persist()
+        return changed
+    }
+
     fun isKindEnabled(kindName: String): Boolean = !kindOff.contains(kindName)
 
     fun setKindEnabled(kindName: String, enabled: Boolean): Boolean {
@@ -136,6 +160,11 @@ object PathSpoofConfig {
         appendLine("# 每行一个包名；与豁免名单冲突时豁免优先")
         spoofPkgs.sorted().forEach { appendLine(it) }
         appendLine()
+        appendLine("[${SECTION_CONTENT_ROOT}]")
+        appendLine("# 这些 guest 的内容目录外部化为 /storage/emulated/0/vsandbox/<pkg>/（真实可读、不含宿主包名）")
+        appendLine("# 只影响 files/cache/external_*；databases/code_cache 仍在内部。每行一个包名")
+        contentRootPkgs.sorted().forEach { appendLine(it) }
+        appendLine()
         appendLine("[${SECTION_KINDS}]")
         appendLine("# 缺省 = on；off = 该族不产生合成路径（但规则仍注册，隔离不受影响）")
         appendLine("# 可选值：on / off")
@@ -149,6 +178,8 @@ object PathSpoofConfig {
         // 两者都只是**默认值**，运行时改本文件或走 CmdReceiver 即可，不需要改代码。
         exemptPkgs.add(DEFAULT_EXEMPT_PKG)
         spoofPkgs.add(VirtualConstants.CM_PACKAGE)
+        // B 态默认：via 的内容目录外部化（WebView 需要真实可读、不含宿主包名的路径）
+        contentRootPkgs.add(DEFAULT_EXEMPT_PKG)
         storeFile = f
         try {
             f.parentFile?.mkdirs()

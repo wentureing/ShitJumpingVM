@@ -267,6 +267,48 @@ class CmdReceiver : BroadcastReceiver() {
                 list.forEach { Log.i(TAG, "SPOOF_EXEMPT pkg=$it") }
             }
 
+            ACTION_CONTENT_ROOT_ADD -> {
+                val pkg = intent.getStringExtra("pkg")
+                if (pkg.isNullOrBlank()) {
+                    Log.w(TAG, "CONTENT_ROOT_ADD: missing --es pkg")
+                    return
+                }
+                val changed =
+                    com.nextvm.core.model.PathSpoofConfig.setExternalContentListed(pkg, true)
+                Log.i(
+                    TAG,
+                    "CONTENT_ROOT_ADD $pkg changed=$changed " +
+                        "list=${com.nextvm.core.model.PathSpoofConfig.externalContentList()} " +
+                        "（重启 guest 后生效）"
+                )
+            }
+
+            ACTION_CONTENT_ROOT_REMOVE -> {
+                val pkg = intent.getStringExtra("pkg")
+                if (pkg.isNullOrBlank()) {
+                    Log.w(TAG, "CONTENT_ROOT_REMOVE: missing --es pkg")
+                    return
+                }
+                val changed =
+                    com.nextvm.core.model.PathSpoofConfig.setExternalContentListed(pkg, false)
+                Log.i(
+                    TAG,
+                    "CONTENT_ROOT_REMOVE $pkg changed=$changed " +
+                        "list=${com.nextvm.core.model.PathSpoofConfig.externalContentList()} " +
+                        "（重启 guest 后生效）"
+                )
+            }
+
+            ACTION_CONTENT_ROOT_LIST -> {
+                val list = com.nextvm.core.model.PathSpoofConfig.externalContentList()
+                Log.i(
+                    TAG,
+                    "CONTENT_ROOT_LIST count=${list.size} " +
+                        "loaded=${com.nextvm.core.model.PathSpoofConfig.isLoaded()}"
+                )
+                list.forEach { Log.i(TAG, "CONTENT_ROOT pkg=$it") }
+            }
+
             ACTION_SELF_CHECK -> {
                 val line = try {
                     // --es instance <instanceId>：额外给该 guest 写自检请求（guest 下次 resume 时跑）
@@ -329,7 +371,10 @@ class CmdReceiver : BroadcastReceiver() {
         // --- 路径欺骗豁免（2026-11-25）---
         // 豁免 = 不做任何路径形态欺骗（不产生合成路径），但仍隔离到沙箱
         // 注意：改完需重启容器/guest 才生效
-        const val ACTION_SPOOF_EXEMPT_ADD = "com.nextvm.cmd.SPOOF_EXEMPT_ADD"
+        const val ACTION_CONTENT_ROOT_ADD = "com.nextvm.cmd.CONTENT_ROOT_ADD"
+    const val ACTION_CONTENT_ROOT_REMOVE = "com.nextvm.cmd.CONTENT_ROOT_REMOVE"
+    const val ACTION_CONTENT_ROOT_LIST = "com.nextvm.cmd.CONTENT_ROOT_LIST"
+    const val ACTION_SPOOF_EXEMPT_ADD = "com.nextvm.cmd.SPOOF_EXEMPT_ADD"
         const val ACTION_SPOOF_EXEMPT_REMOVE = "com.nextvm.cmd.SPOOF_EXEMPT_REMOVE"
         const val ACTION_SPOOF_EXEMPT_LIST = "com.nextvm.cmd.SPOOF_EXEMPT_LIST"
 
