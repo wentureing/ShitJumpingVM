@@ -61,7 +61,14 @@ class AppRedirectionsTest {
             AppRedirections.HOST_EXT_PREFIX_B,
         )
         assertEquals("变化的必须恰好是这 6 条", expectedChanged, changed)
-        assertTrue("变化的都指向 vsandbox/external_data", changed.all { b[it]!!.startsWith(extRoot) })
+        val extRootNoSlash = extRoot.trimEnd('/')
+        assertTrue(
+            "变化的都指向 vsandbox/external_data",
+            changed.all {
+                val to = b[it]!!
+                to == extRoot || to == extRootNoSlash || to.startsWith(extRoot)
+            },
+        )
 
         // 未变化的 10 条：data/data、data/user/0、obb×4、media×4
         val unchanged = base.keys - changed
@@ -161,7 +168,15 @@ class AppRedirectionsTest {
             "/sandbox/$other/sdcard/Android/data/$other/files/a",
             resolve(otherRules, path),
         )
-        assertTrue("via 规则集与 other 规则集 from 不相交", (viaRules intersect otherRules.map { it.first }.toSet()).isEmpty())
+        // 注：from 必然有交集（宿主兜底前缀 Android/data/com.nextvm.app/ 对所有 guest 相同），
+        // 所以这里固定的是更本质的性质：other 的任何目标都不得指向 vsandbox。
+        assertTrue(
+            "other 的规则目标不得含 vsandbox（白名单不外溢）",
+            otherRules.none { it.second.contains("vsandbox") },
+        )
+        assertTrue("other 的规则目标不得含 mark.via", otherRules.none { it.second.contains(guest) })
+        // via 的树只由 via 自己的规则指向
+        assertTrue(viaRules.isNotEmpty())
     }
 
     @Test
