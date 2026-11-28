@@ -525,6 +525,29 @@ class VirtualApplicationManager @Inject constructor(
             )
             // G3：把库级白名单下发给 native（绑定 same-guest 作用域；默认值见 LibAllowDefaults）
             nativeHookBridge.setupLibAllow()
+            // T-3：同时把期望落进 guest 的 files/，供探针 H2 读取比对（只写文件，不改行为）
+            runCatching {
+                val expect = java.io.File(appDir, "files")
+                expect.mkdirs()
+                java.io.File(expect, "lib-allow.json").writeText(
+                    org.json.JSONObject()
+                        .put(
+                            "pkgAllow",
+                            com.nextvm.core.hook.LibAllowDefaults.PKG_ALLOW.joinToString(",")
+                        )
+                        .put(
+                            "libAllow",
+                            com.nextvm.core.hook.LibAllowDefaults.LIB_ALLOW.joinToString(",")
+                        )
+                        .put(
+                            "symAllow",
+                            com.nextvm.core.hook.LibAllowDefaults.SYM_ALLOW.joinToString(",")
+                        )
+                        .toString()
+                )
+            }.onFailure {
+                com.nextvm.core.common.DebugTrace.fail("t3-lib-allow", "write lib-allow.json", it)
+            }
             com.nextvm.core.common.DebugTrace.event(
                 "v142",
                 "registered rules=" + nativeHookBridge.getPathRedirectSnapshot().size +
