@@ -574,11 +574,11 @@ static bool ns_open_diag_enabled() {
     return cached != 0;
 }
 static void diag_caller(void* ret_addr, char* buf, size_t len);
-static void wv_read_trace(const char* fn, const char* path, int fd, int err) {
+static void wv_read_trace(const char* fn, const char* path, int fd, int err, void* ret) {
     if (path == nullptr) return;
     if (strstr(path, "wvprobe") == nullptr) return;
     char who[128] = "?";
-    diag_caller(__builtin_return_address(0), who, sizeof(who));
+    diag_caller(ret, who, sizeof(who));
     char line[640];
     int n = snprintf(line, sizeof(line), "%s pid=%d tid=%d fd=%d err=%d who=%s path=%s\n",
                      fn, getpid(), gettid(), fd, err, who, path);
@@ -623,11 +623,11 @@ static int hooked_open(const char* path, int flags, ...) {
         mode_t mode = static_cast<mode_t>(va_arg(args, int));
         va_end(args);
         int r = real_open(actual_path, flags, mode);
-        wv_read_trace("open", path, r, r < 0 ? errno : 0);
+        wv_read_trace("open", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
         return r;
     }
     int r = real_open(actual_path, flags);
-    wv_read_trace("open", path, r, r < 0 ? errno : 0);
+    wv_read_trace("open", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
     return r;
 }
 
@@ -663,11 +663,11 @@ static int hooked_openat(int dirfd, const char* path, int flags, ...) {
         mode_t mode = static_cast<mode_t>(va_arg(args, int));
         va_end(args);
         int r = real_openat(dirfd, actual_path, flags, mode);
-        wv_read_trace("openat", path, r, r < 0 ? errno : 0);
+        wv_read_trace("openat", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
         return r;
     }
     int r = real_openat(dirfd, actual_path, flags);
-    wv_read_trace("openat", path, r, r < 0 ? errno : 0);
+    wv_read_trace("openat", path, r, r < 0 ? errno : 0, __builtin_return_address(0));
     return r;
 }
 
@@ -1101,7 +1101,7 @@ static int hooked_dl_iterate_phdr(int (*callback)(struct dl_phdr_info*, size_t, 
     if (logged < 10) {
         logged++;
         char who[128], cb_who[128];
-        diag_caller(__builtin_return_address(0), who, sizeof(who));
+        diag_caller(ret, who, sizeof(who));
         diag_caller((void*)callback, cb_who, sizeof(cb_who));
         LOGI("DIAG dl_iterate_phdr called by %s (callback in %s)", who, cb_who);
     }
@@ -1120,7 +1120,7 @@ static long hooked_ptrace(int request, ...) {
     if (logged < 30) {
         logged++;
         char who[128];
-        diag_caller(__builtin_return_address(0), who, sizeof(who));
+        diag_caller(ret, who, sizeof(who));
         LOGI("DIAG ptrace req=%d pid=%d addr=%p data=%p by %s",
              request, (int)pid, addr, data, who);
     }
@@ -1214,7 +1214,7 @@ static long hooked_syscall(long number, ...) {
         if ((interesting && logged_int < 40) || (!interesting && logged_other < 10)) {
             if (interesting) logged_int++; else logged_other++;
             char who[128];
-            diag_caller(__builtin_return_address(0), who, sizeof(who));
+            diag_caller(ret, who, sizeof(who));
             if (number == 56 && a2 != 0) {
                 LOGI("DIAG syscall openat dirfd=%ld path=%s by %s",
                      a1, (const char*)a2, who);
@@ -1236,7 +1236,7 @@ static pid_t hooked_fork() {
     if (log_it) {
         logged++;
         char who[128];
-        diag_caller(__builtin_return_address(0), who, sizeof(who));
+        diag_caller(ret, who, sizeof(who));
         LOGI("DIAG fork called by %s (in pid %d)", who, (int)getpid());
     }
     pid_t r = real_fork ? real_fork() : -1;
@@ -1312,7 +1312,7 @@ static DIR* hooked_opendir(const char* path) {
         if (logged < 20) {
             logged++;
             char who[128];
-            diag_caller(__builtin_return_address(0), who, sizeof(who));
+            diag_caller(ret, who, sizeof(who));
             LOGI("DIAG opendir %s by %s", path, who);
         }
     }
