@@ -25,10 +25,23 @@ Verdict classify_lib(const char* lib_name, bool system_libs_enabled) {
         return {Decision::kSkip, Reason::kContainerSelf};
     }
 
-    // 2) 图形栈：patch 后 shader 编译 abort（六级判据，顺序照搬）
+    // 2) 图形栈：patch 后 shader 编译 abort / 渲染 SIGABRT。
+    //    2026-11-28 全系统摸底：实际有 40 个图形/渲染库（/system 24 + /system_ext 1 + /vendor 15），
+    //    原先只覆盖 6 类关键词，漏掉 34 个（hwui/minikin/harfbuzz/gui/ui/drm/gralloc/adreno 全家/angle/
+    //    vivo 私有渲染库）。这些库**不参与文件路径翻译**，patch 它们只有风险、没有收益。
+    //    清单见 docs/现状/现状-系统库分类与版本敏感性.md
     if (has(lib_name, "libGLES") || has(lib_name, "libEGL") ||
         has(lib_name, "eglSubDriver") || has(lib_name, "libvulkan") ||
-        has(lib_name, "vulkan.adreno") || has(lib_name, "libllvm-glnext")) {
+        has(lib_name, "vulkan.") || has(lib_name, "libllvm-glnext") ||
+        has(lib_name, "libhwui") || has(lib_name, "libminikin") ||
+        has(lib_name, "libharfbuzz") || has(lib_name, "libskia") ||
+        has(lib_name, "libgui") || has(lib_name, "libui.so") ||
+        has(lib_name, "libdrm") || has(lib_name, "libgralloc") ||
+        has(lib_name, "libgsl") || has(lib_name, "libq3dtools") ||
+        has(lib_name, "libOpenCL") || has(lib_name, "libadreno") ||
+        has(lib_name, "librenderengine") || has(lib_name, "libSurfaceFlinger") ||
+        has(lib_name, "libpanglearmor") || has(lib_name, "libgpurenderengine") ||
+        has(lib_name, "libgps_lightgbm")) {
         return {Decision::kSkip, Reason::kGraphicsStack};
     }
 

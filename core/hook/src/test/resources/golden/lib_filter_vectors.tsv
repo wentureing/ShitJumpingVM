@@ -22,3 +22,9 @@ libllvm-glnext.so	0	skip	graphics_stack
 libDexHelper.so	0	skip	system_lib
 libsqlite.so	1	patch	system_lib
 <null>	0	patch	none
+/system/lib64/libhwui.so	0	skip	graphics_stack
+/system/lib64/libminikin.so	0	skip	graphics_stack
+/system/lib64/libgui.so	0	skip	graphics_stack
+/system/lib64/libgralloctypes.so	0	skip	graphics_stack
+/vendor/lib64/libEGL_adreno.so	0	skip	graphics_stack
+/vendor/lib64/libq3dtools_adreno.so	0	skip	graphics_stack
