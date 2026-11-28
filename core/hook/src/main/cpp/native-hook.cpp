@@ -2166,8 +2166,9 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
         // 白名单未下发时系统库先被跳过；记入 g_skipped_libs，等 nativeSetLibAllow
         // 下发后由 repatch_loaded_libs() 重评（配置晚于库加载，这是事实时序）。
         const bool applied = patch_library_got(info->dlpi_addr, name, dynamic);
+        // libs_patched 维持旧语义：过回调即计数（不管是否真打上槽），基线判据依赖它
+        g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
         if (applied || ns_lib_allow_configured()) {
-            g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
             if (info->dlpi_addr != 0) g_patched_bases.insert(info->dlpi_addr);
         } else if (info->dlpi_addr != 0) {
             g_skipped_libs.insert(info->dlpi_addr);

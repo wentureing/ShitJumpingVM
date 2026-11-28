@@ -8,7 +8,7 @@ package com.nextvm.core.hook
 object LibAllowDefaults {
 
     /** 只对这些 guest 生效（包级保险丝；空 = 不限包）。 */
-    val PKG_ALLOW: Set<String> = setOf("mark.via")
+    val PKG_ALLOW: Set<String> = setOf("mark.via", "com.sandbox.probe")
 
     /** 允许 patch 的库（子串匹配：`libjavacore` 命中 `/apex/.../libjavacore.so`）。 */
     val LIB_ALLOW: List<String> = listOf("libjavacore")
