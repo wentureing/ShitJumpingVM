@@ -243,7 +243,6 @@ static orig_android_dlopen_ext_t real_android_dlopen_ext = nullptr;
 // libraries loaded after nativeInit (e.g. a packer shell's .so brought in
 // via System.loadLibrary) receive the same GOT hooks as startup libraries.
 static void patch_newly_loaded_libraries();
-static void repatch_skipped_libs();
 
 // ==================== Path Redirection Logic ====================
 
@@ -619,13 +618,6 @@ static bool ns_allow_symbol(const char* sym_name) {
     if (v[0] != '\0') return false;  // 已配置则严格按列表
     // 未配置 symAllow 时退化为 open/openat（与诊断模式一致）
     return strcmp(sym_name, "open") == 0 || strcmp(sym_name, "openat") == 0;
-}
-
-// 白名单是否已配置（未配置 ⇒ 完全走原逻辑，零行为变化）
-static bool ns_lib_allow_configured() {
-    char v[PROP_VALUE_MAX] = {0};
-    __system_property_get("debug.nextvm.libAllow", v);
-    return v[0] != '\0';
 }
 static void diag_caller(void* ret_addr, char* buf, size_t len);
 static void wv_read_trace(const char* fn, const char* path, int fd, int err, void* caller_ret) {
@@ -1969,9 +1961,6 @@ static void patch_library_got(uintptr_t base_addr, const char* lib_name,
 // after nativeInit are patched by re-running the pass from the dlopen
 // hooks; this set keeps the pass idempotent and cheap.
 static std::unordered_set<uintptr_t> g_patched_bases;
-// 因"包名未注入"而延后评估的库（白名单语义：等 pkg 就绪后重评，只给命中的 guest 注入）
-static std::unordered_set<uintptr_t> g_skipped_bases;
-static std::unordered_map<uintptr_t, std::string> g_skipped_names;
 static std::mutex g_patch_mutex;
 
 // v90 (diagnostic only, launch116): INIT 后 BSS 读取，见
@@ -2177,22 +2166,7 @@ static int install_hooks_callback(struct dl_phdr_info* info, size_t /*size*/, vo
     }
 
     if (dynamic != nullptr) {
-        // 白名单已配置、但包名尚未注入时（系统库在 guest bind 之前就加载了），
-        // 判据必然不命中 —— 先记入 g_skipped_bases，等 nativeSpoofProcSelf
-        // 注入包名后重评一次。这样"只给白名单里的 guest 注入该库"的语义得以保留。
-        // 未配置白名单时完全走原路径（零行为变化）。
-        const bool defer_for_pkg = ns_lib_allow_configured() &&
-                                   g_spoofed_package_name.empty() &&
-                                   !ns_lib_allow_hit(name);
-        if (!defer_for_pkg) {
-            patch_library_got(info->dlpi_addr, name, dynamic);
-            g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
-            if (info->dlpi_addr != 0) g_patched_bases.insert(info->dlpi_addr);
-        } else if (info->dlpi_addr != 0) {
-            g_skipped_bases.insert(info->dlpi_addr);
-            g_skipped_names[info->dlpi_addr] = name;
-        }
-        return 0;
+        patch_library_got(info->dlpi_addr, name, dynamic);
     }
 
     g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
@@ -2276,56 +2250,6 @@ static bool install_plt_hooks() {
 // Refreshed after every late-patch pass so libraries loaded by the
 // guest (e.g. a packer's .so) become attributable in the trap log.
 static void sc_refresh_modules();
-
-/**
- * 包名注入后重评"因包名未注入而延后"的库：只对 libAllow 命中的库补 patch。
- * 这样"专属系统库注入"仍以 pkgAllow 为准（语义不变），只是把触发点从
- * "库加载时"扩展到"包名就绪时"。
- */
-static void repatch_skipped_libs() {
-    if (g_skipped_bases.empty() || g_spoofed_package_name.empty()) return;
-    if (!ns_lib_allow_configured()) return;
-
-    std::vector<uintptr_t> bases(g_skipped_bases.begin(), g_skipped_bases.end());
-    size_t patched = 0;
-    for (uintptr_t base : bases) {
-        auto it = g_skipped_names.find(base);
-        if (it == g_skipped_names.end()) continue;
-        const std::string name = it->second;
-        g_skipped_bases.erase(base);
-        g_skipped_names.erase(base);
-        if (!ns_lib_allow_hit(name.c_str())) continue;  // 只给白名单包注入
-
-        struct Ctx {
-            uintptr_t base;
-            bool patched;
-        } ctx{base, false};
-        dl_iterate_phdr(
-            [](struct dl_phdr_info* info, size_t, void* data) -> int {
-                Ctx* c = static_cast<Ctx*>(data);
-                if (info->dlpi_addr != c->base) return 0;
-                const ElfW(Dyn)* dyn = nullptr;
-                for (int i = 0; i < info->dlpi_phnum; i++) {
-                    if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
-                        dyn = reinterpret_cast<const ElfW(Dyn)*>(
-                            info->dlpi_addr + info->dlpi_phdr[i].p_vaddr);
-                        break;
-                    }
-                }
-                if (dyn != nullptr) {
-                    patch_library_got(info->dlpi_addr, info->dlpi_name, dyn);
-                    g_native_stats.libs_patched.fetch_add(1, std::memory_order_relaxed);
-                    g_patched_bases.insert(info->dlpi_addr);
-                    c->patched = true;
-                }
-                return 1;
-            },
-            &ctx);
-        if (ctx.patched) ++patched;
-    }
-    LOGI("repatch_skipped: evaluated=%zu patched=%zu pkg=%s", bases.size(), patched,
-         g_spoofed_package_name.c_str());
-}
 
 /**
  * Re-run the GOT patch pass so libraries loaded after nativeInit
@@ -2557,8 +2481,6 @@ Java_com_nextvm_core_hook_NativeHookBridge_nativeSpoofProcSelf(
         std::lock_guard<std::mutex> lock(g_mutex);
         g_spoofed_pid = pid;
         g_spoofed_package_name = std::string(pkg);
-        // 包名就绪 ⇒ 重评"因包名未注入而延后"的库（白名单语义：只给命中的 guest 注入）
-        repatch_skipped_libs();
         // v86: arm the real-maps control experiment for the CM guest
         // only, when the supervisor flag file is present. Read at
         // spoof-setup time, before any guest code (incl. the loader)
