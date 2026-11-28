@@ -46,9 +46,13 @@ class NativeHookBridge @Inject constructor() {
         /** 方案A 开关：宿主 external 兜底重定向。置 false 即回退。 */
         const val HOST_EXTERNAL_FALLBACK = true
 
-        /** 容器包名（宿主）的 external 路径前缀 —— via 用 getOpPackageName() 拼出来的就是它。 */
-        const val HOST_EXT_PREFIX_A = "/storage/emulated/0/Android/data/com.nextvm.app/"
-        const val HOST_EXT_PREFIX_B = "/sdcard/Android/data/com.nextvm.app/"
+        /** @deprecated 已移入 [AppRedirections]（规则构造的纯函数所在），此处仅保留兼容引用。 */
+        @Deprecated("Use AppRedirections.HOST_EXT_PREFIX_A", ReplaceWith("AppRedirections.HOST_EXT_PREFIX_A"))
+        const val HOST_EXT_PREFIX_A = AppRedirections.HOST_EXT_PREFIX_A
+
+        /** @deprecated 已移入 [AppRedirections]。 */
+        @Deprecated("Use AppRedirections.HOST_EXT_PREFIX_B", ReplaceWith("AppRedirections.HOST_EXT_PREFIX_B"))
+        const val HOST_EXT_PREFIX_B = AppRedirections.HOST_EXT_PREFIX_B
         private const val TAG = "NativeHook"
 
         // Proc filesystem paths that need spoofing
@@ -421,104 +425,26 @@ class NativeHookBridge @Inject constructor() {
     }
 
     fun setupAppRedirections(guestPackageName: String, instanceId: String, sandboxDataDir: String) {
-        // Primary data directory redirection
-        addPathRedirection(
-            "/data/data/$guestPackageName/",
-            "$sandboxDataDir/"
-        )
-        addPathRedirection(
-            "/data/user/0/$guestPackageName/",
-            "$sandboxDataDir/"
-        )
-
-        // App-specific external storage（一次注册两式：长路径 + /sdcard 短路径）
-        //
-        // 目标必须与 SandboxManager 的返回完全一致，否则"写到一个地方、从另一个地方读"：
-        //   getExternalAppFilesDir -> <appDir>/sdcard/Android/data/<pkg>/files[/type]
-        //   getExternalAppCacheDir -> <appDir>/sdcard/Android/data/<pkg>/cache
-        // 实测过：早先目标写成 $sandboxDataDir/external_data/，那个目录从来没被写入过，
-        // 于是应用自己拼 /storage/emulated/0/Android/data/<pkg>/ 去列举时会得到空目录。
-        // B 态（内容目录外部化）：自拼路径的翻译目标也要指到 vsandbox，
-        // 否则会出现"写入走 getExternalFilesDir(vsandbox)、列举走自拼路径(沙箱)"的两份分离。
-        // 说明见 docs/设计/设计-内容目录三态与真假取舍.md
-        val externalRoot = if (
+        // B 态（内容目录外部化）：Android/data/<guest>/ 族指向 vsandbox/<pkg>/external_data/，
+        // 与 getExternalFilesDir -> external_data/files/<type> 同构，前缀替换天然对齐（无需特殊规则）。
+        val externalDataRoot = if (
             com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)
         ) {
-            "/storage/emulated/0/vsandbox/$guestPackageName/external_files/"
+            "${AppRedirections.EXTERNAL_DATA_ROOT}/$guestPackageName/external_data/"
         } else {
-            "$sandboxDataDir/sdcard/Android/data/$guestPackageName/"
+            null
         }
-        val guestExternalData = externalRoot
-        if (com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)) {
-            runCatching { java.io.File(externalRoot).mkdirs() }
+        for ((from, to) in AppRedirections.build(guestPackageName, sandboxDataDir, externalDataRoot)) {
+            addPathRedirection(from, to)
         }
-        addPathRedirection("/storage/emulated/0/Android/data/$guestPackageName/", guestExternalData)
-        addPathRedirection("/sdcard/Android/data/$guestPackageName/", guestExternalData)
-        // 无尾斜杠变体：路径恰好等于前缀本身时（getExternalFilesDir/getObbDir 返回的正是这种形式），
-        // 带斜杠的规则 startsWith 不成立，会原样返回 -> 与「有斜杠变体」落到不同目录。
-        addPathRedirection(
-            "/storage/emulated/0/Android/data/$guestPackageName",
-            guestExternalData.trimEnd('/')
-        )
-        addPathRedirection(
-            "/sdcard/Android/data/$guestPackageName",
-            guestExternalData.trimEnd('/')
-        )
-
-        // OBB storage —— 同理，getExternalObbDir 返回 <appDir>/sdcard/Android/obb/<pkg>
-        val guestObb = "$sandboxDataDir/sdcard/Android/obb/$guestPackageName/"
-        addPathRedirection("/storage/emulated/0/Android/obb/$guestPackageName/", guestObb)
-        addPathRedirection("/sdcard/Android/obb/$guestPackageName/", guestObb)
-        addPathRedirection(
-            "/storage/emulated/0/Android/obb/$guestPackageName",
-            guestObb.trimEnd('/')
-        )
-        addPathRedirection(
-            "/sdcard/Android/obb/$guestPackageName",
-            guestObb.trimEnd('/')
-        )
-
-
-        // media 目录 —— getExternalMediaDir 返回 <appDir>/sdcard/Android/media/<pkg>
-        val guestMedia = "$sandboxDataDir/sdcard/Android/media/$guestPackageName/"
-        addPathRedirection("/storage/emulated/0/Android/media/$guestPackageName/", guestMedia)
-        addPathRedirection("/sdcard/Android/media/$guestPackageName/", guestMedia)
-        addPathRedirection(
-            "/storage/emulated/0/Android/media/$guestPackageName",
-            guestMedia.trimEnd('/')
-        )
-        addPathRedirection("/sdcard/Android/media/$guestPackageName", guestMedia.trimEnd('/'))
-
-        // 宿主包名 external 兜底。说明见 docs/设计/设计-按进程区分的宿主路径兜底.md
-        //
-        // 目标必须是 <sandbox>/sdcard/Android/data/<guest>，不能是 host_ext：
-        //   guest 保存时走 getExternalFilesDir("xxx")，VirtualContext 返回
-        //     <sandbox>/sdcard/Android/data/<guest>/files/xxx
-        //   而读取时 guest 常自己拼
-        //     /storage/emulated/0/Android/data/<getOpPackageName()>/files/xxx
-        //   getOpPackageName() 返回宿主包名（必要偏差，避免 AppOpsManager 校验抛错），
-        //   于是拼出 .../Android/data/com.nextvm.app/... —— 必须落到 guest 自己的 external 目录，
-        //   否则"保存到 A、从 B 读"，列表永远是空的。
-        if (HOST_EXTERNAL_FALLBACK) {
-            // B 态：guest 拼的是 <host>/files/<type>（真机形状带 files 段），而 vsandbox 布局是
-            // external_files/<type>（无 files 段）。这里用更长前缀把 files 段剥掉，让"保存"与
-            // "按 getOpPackageName() 拼路径读取"落到同一目录。规则表是最长前缀优先，所以能压过下面的根规则。
-            if (com.nextvm.core.model.PathSpoofConfig.isExternalContentListed(guestPackageName)) {
-                val extRoot = "/storage/emulated/0/vsandbox/$guestPackageName/external_files/"
-                for (prefix in arrayOf(HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B)) {
-                    addPathRedirection(prefix + "files/", extRoot)
-                    addPathRedirection(prefix + "files", extRoot.trimEnd('/'))
-                    addPathRedirection(prefix + "cache/", extRoot + "cache/")
-                    addPathRedirection(prefix + "cache", (extRoot + "cache").trimEnd('/'))
-                }
-                runCatching { java.io.File(extRoot).mkdirs() }
+        if (externalDataRoot != null) {
+            // files/ 与 cache/ 两个子目录先建出来（getter 也会建，这里保证首读不失败）
+            runCatching {
+                java.io.File(externalDataRoot, "files").mkdirs()
+                java.io.File(externalDataRoot, "cache").mkdirs()
             }
-            addPathRedirection(HOST_EXT_PREFIX_A, guestExternalData)
-            addPathRedirection(HOST_EXT_PREFIX_B, guestExternalData)
-            runCatching { java.io.File(guestExternalData).mkdirs() }
             Timber.tag(TAG).i(
-                "Host-package external fallback ON: %s|%s -> %s",
-                HOST_EXT_PREFIX_A, HOST_EXT_PREFIX_B, guestExternalData
+                "Content root externalized: %s -> %s", guestPackageName, externalDataRoot
             )
         }
 

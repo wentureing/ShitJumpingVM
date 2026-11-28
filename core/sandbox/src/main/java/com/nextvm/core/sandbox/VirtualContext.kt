@@ -212,7 +212,8 @@ class VirtualContext(
         // 详见 docs/架构/架构-syntheticDataDir.md
         val dir = contentDir(
             sandboxDir,
-            if (type != null) "external_files/$type" else "external_files",
+            // 与真机同构：Android/data/<pkg>/files[/type] <-> external_data/files[/type]
+            if (type != null) "external_data/files/$type" else "external_data/files",
         ) {
             val base = VirtualConstants.syntheticExternalDir(guestPackageName)
             File(if (type != null) "$base/files/$type" else "$base/files")
@@ -229,7 +230,7 @@ class VirtualContext(
 
     override fun getExternalCacheDir(): File {
         val sandboxDir = sandboxManager.getExternalAppCacheDir(instanceId, guestPackageName)
-        return contentDir(sandboxDir, "external_cache") {
+        return contentDir(sandboxDir, "external_data/cache") {
             File(VirtualConstants.syntheticExternalCacheDir(guestPackageName))
         }
     }
